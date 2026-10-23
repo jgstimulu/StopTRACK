@@ -1426,7 +1426,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
             </div>
 
             {/* Dictionary Accordion Toggle */}
-            <div className="flex items-center justify-between pt-0.5">
+            <div className="flex flex-col items-start gap-2 pt-0.5 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-[11px] text-slate-400">
                 Tem dúvidas sobre os nomes das colunas da versão anterior?
               </span>

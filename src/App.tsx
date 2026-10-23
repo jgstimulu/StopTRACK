@@ -607,7 +607,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-start antialiased selection:bg-amber-500 selection:text-slate-950">
       {/* Desktop Top Toolbar (Frame toggle, Cloud status, QR code share) */}
-      <div className="w-full max-w-5xl px-4 pt-3 pb-1 flex items-center justify-between text-xs text-slate-400">
+      <div className="w-full max-w-5xl px-4 pt-3 pb-1 flex flex-wrap items-center justify-between gap-y-2 text-xs text-slate-400">
         <div className="flex items-center gap-2">
           <span className="font-semibold text-slate-300">StopTRACK Móvel</span>
           <span className="hidden sm:inline text-slate-600">·</span>
@@ -617,7 +617,7 @@ export default function App() {
                 isBackendConnected ? 'bg-emerald-500' : 'bg-amber-500'
               }`}
             ></span>
-            <span className={isBackendConnected ? 'text-emerald-400' : 'text-amber-400'}>
+            <span className={`hidden sm:inline ${isBackendConnected ? 'text-emerald-400' : 'text-amber-400'}`}>
               {isBackendConnected ? 'Nuvem Partilhada Ativa' : 'Modo Offline (Cache Local)'}
             </span>
           </div>
@@ -635,7 +635,7 @@ export default function App() {
             title="Abrir ou partilhar noutro telemóvel via código QR"
           >
             <QrCode className="h-3.5 w-3.5" />
-            <span className="font-bold">Partilhar Telemóvel</span>
+            <span className="hidden sm:inline font-bold">Partilhar Telemóvel</span>
           </button>
 
           {/* Quick link to Backend Config */}
@@ -659,18 +659,18 @@ export default function App() {
           <button
             type="button"
             onClick={() => setIsMobileFrame(!isMobileFrame)}
-            className="hidden md:flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
             title="Alternar entre simulação de ecrã móvel e largura total"
           >
             {isMobileFrame ? (
               <>
                 <Smartphone className="h-3.5 w-3.5 text-amber-400" />
-                <span>Telemóvel</span>
+                <span className="hidden sm:inline">Telemóvel</span>
               </>
             ) : (
               <>
                 <Monitor className="h-3.5 w-3.5 text-sky-400" />
-                <span>Expandido</span>
+                <span className="hidden sm:inline">Expandido</span>
               </>
             )}
           </button>
