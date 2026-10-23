@@ -1978,8 +1978,8 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="min-w-0">
                   <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
                     Nova Palavra-passe
                   </label>
@@ -2002,7 +2002,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                   </div>
                 </div>
 
-                <div>
+                <div className="min-w-0">
                   <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
                     Confirmar Nova Palavra-passe
                   </label>
