@@ -50,6 +50,40 @@ interface DatabaseSchema {
   updatedAt: number;
 }
 
+function operatorIdentity(operator: any): string | null {
+  if (!operator || typeof operator.name !== 'string' || !operator.name.trim()) return null;
+  return [
+    operator.name.trim().normalize('NFKC').toLocaleLowerCase('pt-PT'),
+    String(operator.role || 'Operador').trim().normalize('NFKC').toLocaleLowerCase('pt-PT'),
+    Boolean(operator.canStart),
+    Boolean(operator.canClose),
+    operator.active !== false,
+  ].join('|');
+}
+
+function removeDuplicateOperators(operators: any[]): any[] {
+  const seen = new Set<string>();
+  return operators.filter((operator) => {
+    const identity = operatorIdentity(operator);
+    if (!identity) return true;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
+function hasClosedStoppageFor(downtime: any, stoppages: any[]): boolean {
+  if (!downtime || typeof downtime.machineId !== 'string' || !Number.isFinite(downtime.startTimestamp)) {
+    return false;
+  }
+  return stoppages.some(
+    (record) =>
+      typeof record?.machineId === 'string' &&
+      record.machineId.toUpperCase() === downtime.machineId.toUpperCase() &&
+      record.startTimestamp === downtime.startTimestamp
+  );
+}
+
 // Active in-memory session tokens
 const activeAdminTokens = new Set<string>();
 
@@ -102,19 +136,30 @@ function loadDatabase(): DatabaseSchema {
     if (fs.existsSync(DB_FILE)) {
       const data = fs.readFileSync(DB_FILE, 'utf-8');
       const parsed = JSON.parse(data);
-      return {
+      const sourceOperators = Array.isArray(parsed.operators) ? parsed.operators : [];
+      const sourceActiveDowntimes = Array.isArray(parsed.activeDowntimes) ? parsed.activeDowntimes : [];
+      const operators = removeDuplicateOperators(sourceOperators);
+      const stoppages = Array.isArray(parsed.stoppages) ? parsed.stoppages : [];
+      const activeDowntimes = sourceActiveDowntimes.filter(
+        (downtime: any) => !hasClosedStoppageFor(downtime, stoppages)
+      );
+      const db: DatabaseSchema = {
         admin: {
           email: parsed.admin?.email || DEFAULT_ADMIN.email,
           password: parsed.admin?.password || DEFAULT_ADMIN.password,
           pin: parsed.admin?.pin || DEFAULT_ADMIN.pin || '2026',
           updatedAt: parsed.admin?.updatedAt || Date.now(),
         },
-        operators: Array.isArray(parsed.operators) ? parsed.operators : [],
+        operators,
         stoppageTypes: parsed.stoppageTypes || DEFAULT_STOPPAGE_TYPES,
-        activeDowntimes: Array.isArray(parsed.activeDowntimes) ? parsed.activeDowntimes : [],
-        stoppages: Array.isArray(parsed.stoppages) ? parsed.stoppages : [],
+        activeDowntimes,
+        stoppages,
         updatedAt: parsed.updatedAt || Date.now(),
       };
+      if (operators.length !== sourceOperators.length || activeDowntimes.length !== sourceActiveDowntimes.length) {
+        saveDatabase(db);
+      }
+      return db;
     }
   } catch (err) {
     console.error('Error loading db.json, using defaults:', err);
@@ -277,6 +322,9 @@ app.post('/api/active-stoppages', (req, res) => {
   const downtime = req.body;
   if (!downtime || !downtime.machineId) {
     return res.status(400).json({ error: 'machineId é obrigatório.' });
+  }
+  if (hasClosedStoppageFor(downtime, db.stoppages)) {
+    return res.status(409).json({ error: 'Esta paragem já foi encerrada e não pode voltar a ficar ativa.' });
   }
 
   // Auto-assign shift if not explicitly provided
@@ -503,6 +551,12 @@ app.post('/api/operators', requireAdminAuth, (req, res) => {
     canClose: Boolean(canClose),
     active: true,
   };
+
+  const identity = operatorIdentity(newOp);
+  const existing = db.operators.find((operator) => operatorIdentity(operator) === identity);
+  if (existing) {
+    return res.json(existing);
+  }
 
   db.operators.push(newOp);
   saveDatabase(db);
