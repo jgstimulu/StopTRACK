@@ -39,6 +39,18 @@ import {
   apiDeleteStoppageType,
   apiResetDefaults,
 } from './services/api';
+import {
+  subscribeToFirestore,
+  firestoreSaveStoppage,
+  firestoreDeleteStoppage,
+  firestoreSetActiveDowntime,
+  firestoreRemoveActiveDowntime,
+  firestoreSaveOperator,
+  firestoreDeleteOperator,
+  firestoreSaveStoppageType,
+  firestoreDeleteStoppageType,
+  firestoreSeedIfEmpty,
+} from './services/firebaseSync';
 
 import { PageHome } from './pages/PageHome';
 import { PageSelectMachine } from './pages/PageSelectMachine';
@@ -128,37 +140,111 @@ export default function App() {
   // Notification Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Periodic Cloud Sync Function (Keep all phones aligned)
+  // Periodic Cloud Sync Function with Bidirectional Resilience (Keep all devices aligned & never wipe data)
   const syncWithCloud = async () => {
     try {
       setIsSyncing(true);
       const state = await fetchSharedState();
       setIsBackendConnected(true);
 
+      // 1. Sync Operators with local merge
       if (Array.isArray(state.operators)) {
-        setOperators(state.operators);
-        localStorage.setItem('manutrack_operators_cache', JSON.stringify(state.operators));
+        let localOps: Operator[] = [];
+        try {
+          const savedOps = localStorage.getItem('manutrack_operators_cache');
+          if (savedOps) localOps = JSON.parse(savedOps);
+        } catch {}
+
+        const serverOpIds = new Set(state.operators.map((o: any) => o.id));
+        const missingOpsOnServer = localOps.filter((o) => o && o.id && !serverOpIds.has(o.id));
+        const mergedOps = [...state.operators, ...missingOpsOnServer];
+
+        if (mergedOps.length > 0) {
+          setOperators(mergedOps);
+          localStorage.setItem('manutrack_operators_cache', JSON.stringify(mergedOps));
+        }
+
+        // Re-push any locally saved operators if server restarted
+        if (missingOpsOnServer.length > 0) {
+          for (const op of missingOpsOnServer) {
+            apiAddOperator(op).catch(() => {});
+          }
+        }
       }
+
+      // 2. Sync Stoppage Types
       if (state.stoppageTypes && state.stoppageTypes.length > 0) {
         setStoppageTypes(state.stoppageTypes);
         localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(state.stoppageTypes));
       }
+
+      // 3. Sync Active Downtimes (merge running timers)
       if (Array.isArray(state.activeDowntimes)) {
-        setActiveDowntimes(state.activeDowntimes);
-        localStorage.setItem('manutrack_active_downtimes', JSON.stringify(state.activeDowntimes));
+        let localActives: ActiveDowntime[] = [];
+        try {
+          const savedActives = localStorage.getItem('manutrack_active_downtimes');
+          if (savedActives) localActives = JSON.parse(savedActives);
+        } catch {}
+
+        const serverActiveIds = new Set(state.activeDowntimes.map((d: any) => d.machineId));
+        const missingActivesOnServer = localActives.filter(
+          (d) => d && d.machineId && !serverActiveIds.has(d.machineId)
+        );
+        const mergedActives = [...state.activeDowntimes, ...missingActivesOnServer];
+
+        setActiveDowntimes(mergedActives);
+        localStorage.setItem('manutrack_active_downtimes', JSON.stringify(mergedActives));
+
+        // Re-push active downtime if server missed it
+        if (missingActivesOnServer.length > 0) {
+          for (const d of missingActivesOnServer) {
+            apiStartActiveDowntime(d).catch(() => {});
+          }
+        }
 
         // If currently on timing page, ensure focused downtime still matches
         if (focusedDowntime) {
-          const match = state.activeDowntimes.find((d) => d.machineId === focusedDowntime.machineId);
+          const match = mergedActives.find((d) => d.machineId === focusedDowntime.machineId);
           if (match) {
             setFocusedDowntime(match);
           }
         }
       }
+
+      // 4. Sync Stoppages History (CRITICAL: Never overwrite with empty list!)
       if (Array.isArray(state.stoppages)) {
-        const cleanStoppages = state.stoppages.filter((r: any) => r && r.id && !r.id.startsWith('seed-'));
-        setRecords(cleanStoppages);
-        localStorage.setItem('manutrack_stoppages_history', JSON.stringify(cleanStoppages));
+        const cleanServerStoppages = state.stoppages.filter(
+          (r: any) => r && r.id && !r.id.startsWith('seed-')
+        );
+
+        let localRecords: StoppageRecord[] = [];
+        try {
+          const saved = localStorage.getItem('manutrack_stoppages_history');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed)) {
+              localRecords = parsed.filter((r) => r && r.id && !r.id.startsWith('seed-'));
+            }
+          }
+        } catch {}
+
+        const serverRecordIds = new Set(cleanServerStoppages.map((s: any) => s.id));
+        const missingOnServer = localRecords.filter((r) => r && r.id && !serverRecordIds.has(r.id));
+
+        // Merge both sets without duplicates
+        const mergedRecords = [...cleanServerStoppages, ...missingOnServer].sort(
+          (a, b) => (b.startTimestamp || b.createdAt || 0) - (a.startTimestamp || a.createdAt || 0)
+        );
+
+        setRecords(mergedRecords);
+        localStorage.setItem('manutrack_stoppages_history', JSON.stringify(mergedRecords));
+
+        // If server lost data (e.g. cloud container redeployment or restart), automatically re-seed server with client records!
+        if (missingOnServer.length > 0) {
+          apiBatchImportStoppages(missingOnServer, false).catch((err) => {
+            console.warn('Re-syncing local records to server:', err);
+          });
+        }
       }
     } catch {
       setIsBackendConnected(false);
@@ -167,18 +253,52 @@ export default function App() {
     }
   };
 
-  // Initial load and periodic polling every 2.5 seconds
+  // Initial load, real-time Firestore subscription & cloud polling
   useEffect(() => {
+    // 1. Subscribe to real-time Firestore Cloud Database updates
+    const unsubscribeFirestore = subscribeToFirestore({
+      onStoppagesUpdate: (remoteStoppages) => {
+        if (remoteStoppages.length > 0) {
+          setRecords(remoteStoppages);
+          localStorage.setItem('manutrack_stoppages_history', JSON.stringify(remoteStoppages));
+        }
+      },
+      onActiveDowntimesUpdate: (remoteActives) => {
+        setActiveDowntimes(remoteActives);
+        localStorage.setItem('manutrack_active_downtimes', JSON.stringify(remoteActives));
+      },
+      onOperatorsUpdate: (remoteOps) => {
+        if (remoteOps.length > 0) {
+          setOperators(remoteOps);
+          localStorage.setItem('manutrack_operators_cache', JSON.stringify(remoteOps));
+        }
+      },
+      onStoppageTypesUpdate: (remoteTypes) => {
+        if (remoteTypes.length > 0) {
+          setStoppageTypes(remoteTypes);
+          localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(remoteTypes));
+        }
+      },
+      onError: (err) => {
+        console.warn('Operating with cached state, waiting for Firestore sync:', err);
+      },
+    });
+
+    // 2. Seed initial data to Firestore if Firestore is empty
+    firestoreSeedIfEmpty(records, operators, stoppageTypes).catch(() => {});
+
+    // 3. Fallback sync with local backend
     syncWithCloud();
 
     const interval = setInterval(() => {
       syncWithCloud();
-    }, 2500);
+    }, 4000);
 
     const onFocus = () => syncWithCloud();
     window.addEventListener('focus', onFocus);
 
     return () => {
+      unsubscribeFirestore();
       clearInterval(interval);
       window.removeEventListener('focus', onFocus);
     };
@@ -205,13 +325,11 @@ export default function App() {
 
   // Operator CRUD Handlers
   const handleAddOperator = async (data: Omit<Operator, 'id' | 'active'>) => {
+    let savedOp: Operator;
     try {
-      const newOp = await apiAddOperator(data);
-      const updated = [...operators, newOp];
-      setOperators(updated);
-      localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
+      savedOp = await apiAddOperator(data);
     } catch {
-      const newOp: Operator = {
+      savedOp = {
         id: `op-${Date.now()}`,
         name: data.name,
         role: data.role,
@@ -219,10 +337,11 @@ export default function App() {
         canClose: data.canClose,
         active: true,
       };
-      const updated = [...operators, newOp];
-      setOperators(updated);
-      localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
     }
+    const updated = [...operators, savedOp];
+    setOperators(updated);
+    localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
+    firestoreSaveOperator(savedOp).catch(() => {});
   };
 
   const handleUpdateOperator = async (id: string, data: Partial<Operator>) => {
@@ -231,10 +350,13 @@ export default function App() {
       const updated = operators.map((o) => (o.id === id ? updatedOp : o));
       setOperators(updated);
       localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
+      firestoreSaveOperator(updatedOp).catch(() => {});
     } catch {
       const updated = operators.map((o) => (o.id === id ? { ...o, ...data } : o));
       setOperators(updated);
       localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
+      const target = updated.find((o) => o.id === id);
+      if (target) firestoreSaveOperator(target).catch(() => {});
     }
   };
 
@@ -247,27 +369,27 @@ export default function App() {
     const updated = operators.filter((o) => o.id !== id);
     setOperators(updated);
     localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
+    firestoreDeleteOperator(id).catch(() => {});
   };
 
   // Stoppage Types CRUD Handlers
   const handleAddStoppageType = async (data: Omit<StoppageTypeItem, 'id' | 'active'>) => {
+    let savedType: StoppageTypeItem;
     try {
-      const newType = await apiAddStoppageType(data);
-      const updated = [...stoppageTypes, newType];
-      setStoppageTypes(updated);
-      localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
+      savedType = await apiAddStoppageType(data);
     } catch {
-      const newType: StoppageTypeItem = {
+      savedType = {
         id: `st-${Date.now()}`,
         name: data.name,
         description: data.description,
         color: data.color,
         active: true,
       };
-      const updated = [...stoppageTypes, newType];
-      setStoppageTypes(updated);
-      localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
     }
+    const updated = [...stoppageTypes, savedType];
+    setStoppageTypes(updated);
+    localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
+    firestoreSaveStoppageType(savedType).catch(() => {});
   };
 
   const handleUpdateStoppageType = async (id: string, data: Partial<StoppageTypeItem>) => {
@@ -276,10 +398,13 @@ export default function App() {
       const updated = stoppageTypes.map((st) => (st.id === id ? updatedType : st));
       setStoppageTypes(updated);
       localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
+      firestoreSaveStoppageType(updatedType).catch(() => {});
     } catch {
       const updated = stoppageTypes.map((st) => (st.id === id ? { ...st, ...data } : st));
       setStoppageTypes(updated);
       localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
+      const target = updated.find((st) => st.id === id);
+      if (target) firestoreSaveStoppageType(target).catch(() => {});
     }
   };
 
@@ -292,6 +417,7 @@ export default function App() {
     const updated = stoppageTypes.filter((st) => st.id !== id);
     setStoppageTypes(updated);
     localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
+    firestoreDeleteStoppageType(id).catch(() => {});
   };
 
   const handleResetDefaults = async () => {
@@ -362,6 +488,7 @@ export default function App() {
 
     // Broadcast to Cloud so all other phones see machine Fxx turn into Parada
     try {
+      firestoreSetActiveDowntime(newActive).catch(() => {});
       await apiStartActiveDowntime(newActive);
     } catch (err) {
       console.warn('Saved locally, background cloud sync pending:', err);
@@ -394,6 +521,7 @@ export default function App() {
     if (focusedDowntime && focusedDowntime.machineId === updated.machineId) {
       setFocusedDowntime(updated);
     }
+    firestoreSetActiveDowntime(updated).catch(() => {});
     apiStartActiveDowntime(updated).catch(() => {});
     setToastMessage(
       `${updated.machineId}: Concluída etapa "${transition.completedStage.type}" (${transition.completedStage.durationMinutes}m). Iniciado Nível ${transition.nextLevel} (${transition.nextStageName}) com ${transition.nextTechnician}.`
@@ -438,7 +566,9 @@ export default function App() {
       );
       setCurrentPage('home');
 
-      // Persist permanently in Cloud Database
+      // Persist permanently in Firestore Cloud Database & Express backend
+      firestoreSaveStoppage(newRecord).catch(() => {});
+      firestoreRemoveActiveDowntime(newRecord.machineId).catch(() => {});
       await apiSaveStoppage(newRecord);
       syncWithCloud();
     } catch (err) {
@@ -448,7 +578,10 @@ export default function App() {
 
   // Delete stoppage from cloud and local with PIN authorization
   const handleDeleteRecord = async (id: string, pin?: string) => {
-    // Attempt deletion on cloud first with credentials
+    // Delete from Firestore
+    firestoreDeleteStoppage(id).catch(() => {});
+
+    // Attempt deletion on cloud backend with credentials
     await apiDeleteStoppage(id, pin);
 
     // If successful, update local state
@@ -472,6 +605,8 @@ export default function App() {
     setCurrentPage('history');
 
     try {
+      // Persist in Firestore
+      firestoreSaveStoppage(newRecord).catch(() => {});
       await apiSaveStoppage(newRecord);
       syncWithCloud();
     } catch (err) {
