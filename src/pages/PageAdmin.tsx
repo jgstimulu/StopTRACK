@@ -88,7 +88,6 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   // Authentication State
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState<boolean>(true);
-  const [adminEmail, setAdminEmail] = useState<string>('jricardosbd@gmail.com');
 
   // Login Form State
   const [loginEmail, setLoginEmail] = useState<string>('');
@@ -168,7 +167,6 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
         if (isMounted) {
           if (res.authenticated && res.user) {
             setIsAuthenticated(true);
-            setAdminEmail(res.user.email);
             setLoginEmail(res.user.email);
           } else {
             setIsAuthenticated(false);
@@ -206,7 +204,6 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
     try {
       const res = await apiAdminLogin(loginEmail, loginPassword);
       setIsAuthenticated(true);
-      setAdminEmail(res.user.email);
       setLoginPassword('');
       playSuccessChime();
       showFeedback('Sessão de Administrador iniciada com sucesso!');
@@ -624,7 +621,6 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
       );
 
       if (res.email) {
-        setAdminEmail(res.email);
         setLoginEmail(res.email);
       }
       playSuccessChime();
@@ -835,10 +831,10 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
           <div className="flex items-center gap-2">
             <div
               className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 px-2 py-1 text-[11px] text-emerald-300 font-mono"
-              title={`Sessão iniciada como ${adminEmail}`}
+              title="Sessão de administrador ativa"
             >
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-              <span className="truncate max-w-[140px] sm:max-w-[200px]">{adminEmail}</span>
+              <span>Administrador</span>
             </div>
 
             <button
@@ -1920,12 +1916,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
               <span>Conta de Administrador Atual</span>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="rounded-xl bg-slate-950/70 p-3 border border-slate-800/80">
-                <span className="text-[10px] text-slate-400 uppercase font-bold block mb-0.5">Email Registado</span>
-                <p className="font-mono text-white font-semibold truncate">{adminEmail}</p>
-              </div>
-
+            <div className="grid grid-cols-1 gap-3 text-xs">
               <div className="rounded-xl bg-slate-950/70 p-3 border border-slate-800/80">
                 <span className="text-[10px] text-slate-400 uppercase font-bold block mb-0.5">Nível de Acesso</span>
                 <p className="text-emerald-400 font-semibold flex items-center gap-1">
@@ -2033,7 +2024,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                   type="email"
                   value={newEmailInput}
                   onChange={(e) => setNewEmailInput(e.target.value)}
-                  placeholder={`Atual: ${adminEmail}`}
+                  placeholder="Introduza o novo email"
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none font-mono"
                 />
               </div>
