@@ -115,10 +115,13 @@ export async function apiStartActiveDowntime(downtime: ActiveDowntime): Promise<
 }
 
 export async function apiCancelActiveDowntime(machineId: string): Promise<void> {
-  const res = await fetch(`/api/active-stoppages/${machineId}`, {
+  const res = await fetch(`/api/active-stoppages/${encodeURIComponent(machineId)}`, {
     method: 'DELETE',
   });
-  if (!res.ok) throw new Error('Falha ao cancelar paragem ativa');
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Falha ao cancelar paragem ativa');
+  }
 }
 
 export async function apiSaveStoppage(record: StoppageRecord): Promise<StoppageRecord> {

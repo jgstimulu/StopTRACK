@@ -285,7 +285,9 @@ app.post('/api/active-stoppages', (req, res) => {
   }
 
   // Remove existing active downtime on this machine if any
-  db.activeDowntimes = db.activeDowntimes.filter((d) => d.machineId !== downtime.machineId);
+  db.activeDowntimes = db.activeDowntimes.filter(
+    (d) => d.machineId.toUpperCase() !== downtime.machineId.toUpperCase()
+  );
   db.activeDowntimes.push(downtime);
   saveDatabase(db);
   res.status(201).json(downtime);
@@ -294,7 +296,9 @@ app.post('/api/active-stoppages', (req, res) => {
 app.delete('/api/active-stoppages/:machineId', (req, res) => {
   const db = loadDatabase();
   const { machineId } = req.params;
-  db.activeDowntimes = db.activeDowntimes.filter((d) => d.machineId !== machineId);
+  db.activeDowntimes = db.activeDowntimes.filter(
+    (d) => d.machineId.toUpperCase() !== machineId.toUpperCase()
+  );
   saveDatabase(db);
   res.json({ success: true, machineId });
 });
@@ -329,7 +333,9 @@ app.post('/api/stoppages', (req, res) => {
   db.stoppages = [record, ...db.stoppages.filter((s) => s.id !== record.id)];
   // Also clear machine from active downtimes if present
   if (record.machineId) {
-    db.activeDowntimes = db.activeDowntimes.filter((d) => d.machineId !== record.machineId);
+    db.activeDowntimes = db.activeDowntimes.filter(
+      (d) => d.machineId.toUpperCase() !== record.machineId.toUpperCase()
+    );
   }
   saveDatabase(db);
   res.status(201).json(record);
