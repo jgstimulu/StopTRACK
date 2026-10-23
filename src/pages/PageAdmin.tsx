@@ -91,7 +91,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   const [adminEmail, setAdminEmail] = useState<string>('jricardosbd@gmail.com');
 
   // Login Form State
-  const [loginEmail, setLoginEmail] = useState<string>('jricardosbd@gmail.com');
+  const [loginEmail, setLoginEmail] = useState<string>('');
   const [loginPassword, setLoginPassword] = useState<string>('');
   const [showLoginPassword, setShowLoginPassword] = useState<boolean>(false);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -751,7 +751,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                   type="text"
                   value={loginEmail}
                   onChange={(e) => setLoginEmail(e.target.value)}
-                  placeholder="jricardosbd@gmail.com ou admin"
+                  placeholder="Introduza admin"
                   autoComplete="username"
                   required
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500 font-mono"

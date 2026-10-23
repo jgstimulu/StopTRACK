@@ -13,7 +13,7 @@ export const AdminLoginGate: React.FC<AdminLoginGateProps> = ({
   onLogin,
   onCancel,
 }) => {
-  const [email, setEmail] = useState(adminEmail || 'jricardosbd@gmail.com');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -75,7 +75,7 @@ export const AdminLoginGate: React.FC<AdminLoginGateProps> = ({
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="exemplo@gmail.com ou admin"
+              placeholder="Introduza admin"
               className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none"
             />
           </div>
