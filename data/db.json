@@ -1,0 +1,76 @@
+{
+  "admin": {
+    "email": "jricardosbd@gmail.com",
+    "password": "admin2026",
+    "updatedAt": 1792525000000
+  },
+  "operators": [],
+  "stoppageTypes": [
+    {
+      "id": "st-1",
+      "name": "Avaria Mecânica",
+      "color": "rose",
+      "description": "Rolamentos, correias, engrenagens, quebras estruturais",
+      "active": true
+    },
+    {
+      "id": "st-2",
+      "name": "Avaria Elétrica",
+      "color": "amber",
+      "description": "Motores, sensores, disjuntores, cablagem, PLCs",
+      "active": true
+    },
+    {
+      "id": "st-3",
+      "name": "Problema Pneumático / Hidráulico",
+      "color": "sky",
+      "description": "Fugas de ar, cilindros, válvulas solenóide, pressão de óleo",
+      "active": true
+    },
+    {
+      "id": "st-4",
+      "name": "Falta de Matéria-Prima",
+      "color": "orange",
+      "description": "Ausência de bobines, caixas, químicos ou insumos",
+      "active": true
+    },
+    {
+      "id": "st-5",
+      "name": "Setup / Mudança de Formato",
+      "color": "indigo",
+      "description": "Ajuste de moldes, troca de ferramentas, afinação",
+      "active": true
+    },
+    {
+      "id": "st-6",
+      "name": "Limpeza e Higienização",
+      "color": "emerald",
+      "description": "Lavagem de linha, aspiração, desinfeção",
+      "active": true
+    },
+    {
+      "id": "st-7",
+      "name": "Manutenção Preventiva",
+      "color": "blue",
+      "description": "Revisão periódica programada, lubrificação",
+      "active": true
+    },
+    {
+      "id": "st-8",
+      "name": "Qualidade / Afinação",
+      "color": "purple",
+      "description": "Desvio de tolerâncias, defeito de produto, amostras",
+      "active": true
+    },
+    {
+      "id": "st-9",
+      "name": "Operacional / Outro",
+      "color": "slate",
+      "description": "Pausa operacional, falta de operador, outros motivos",
+      "active": true
+    }
+  ],
+  "activeDowntimes": [],
+  "stoppages": [],
+  "updatedAt": 1792525000000
+}

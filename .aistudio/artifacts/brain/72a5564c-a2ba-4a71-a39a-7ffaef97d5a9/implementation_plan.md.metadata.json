@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementação da arquitetura de 3 níveis de etapas: 1-Diagnóstico, 2-Intervenção (com suporte para múltiplas etapas encadeadas, ex: mecânica seguida de elétrica e afinação), e 3-Fecho (finalização/arranque).",
+  "updatedAt":  "2026-10-23T15:02:21.433179354Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

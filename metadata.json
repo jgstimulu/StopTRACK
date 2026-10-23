@@ -1,0 +1,6 @@
+{
+  "name": "ManuTrack - Controlo de Paragens",
+  "description": "Aplicação móvel industrial para registo, cronometragem e fecho de paragens de manutenção de máquinas F01 a F30.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
