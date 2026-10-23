@@ -83,6 +83,8 @@ function uniqueOperators(operators: Operator[]): Operator[] {
 export default function App() {
   // Navigation Page
   const [currentPage, setCurrentPage] = useState<AppPage>('home');
+  const currentPageRef = useRef(currentPage);
+  currentPageRef.current = currentPage;
 
   // Backend state: Operators and Stoppage Types
   const [operators, setOperators] = useState<Operator[]>(() => {
@@ -126,6 +128,8 @@ export default function App() {
 
   // Current active downtime being timed or closed
   const [focusedDowntime, setFocusedDowntime] = useState<ActiveDowntime | null>(null);
+  const focusedDowntimeRef = useRef(focusedDowntime);
+  focusedDowntimeRef.current = focusedDowntime;
 
   // Timestamp when stopwatch was stopped
   const [stopEndTimestamp, setStopEndTimestamp] = useState<number>(0);
@@ -157,16 +161,22 @@ export default function App() {
 
   // Notification Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const syncRequestVersionRef = useRef(0);
 
   // Periodic Cloud Sync Function with Bidirectional Resilience (Keep all devices aligned & never wipe data)
   const syncWithCloud = async () => {
     if (isSavingStoppageRef.current) return;
     const syncVersion = cloudStateVersionRef.current;
+    const syncRequestVersion = ++syncRequestVersionRef.current;
 
     try {
       setIsSyncing(true);
       const state = await fetchSharedState();
-      if (isSavingStoppageRef.current || syncVersion !== cloudStateVersionRef.current) return;
+      if (
+        isSavingStoppageRef.current ||
+        syncVersion !== cloudStateVersionRef.current ||
+        syncRequestVersion !== syncRequestVersionRef.current
+      ) return;
       setIsBackendConnected(true);
 
       // The API is the source of truth; stale device caches must not recreate operators.
@@ -187,13 +197,22 @@ export default function App() {
         setActiveDowntimes(state.activeDowntimes);
         localStorage.setItem('manutrack_active_downtimes', JSON.stringify(state.activeDowntimes));
 
-        // If currently on timing page, ensure focused downtime still matches
-        if (focusedDowntime) {
-          const match = state.activeDowntimes.find((d) => d.machineId === focusedDowntime.machineId);
+        // A remote close must also dismiss this device's focused timer/form.
+        const focused = focusedDowntimeRef.current;
+        if (focused) {
+          const match = state.activeDowntimes.find((d) => d.machineId === focused.machineId);
           if (match) {
             setFocusedDowntime(match);
+            focusedDowntimeRef.current = match;
           } else {
             setFocusedDowntime(null);
+            focusedDowntimeRef.current = null;
+            if (currentPageRef.current === 'timing' || currentPageRef.current === 'close_form') {
+              setCurrentPage('home');
+              currentPageRef.current = 'home';
+              setStopEndTimestamp(0);
+              setToastMessage(`A paragem da ${focused.machineId} foi encerrada noutro posto.`);
+            }
           }
         }
       }
@@ -279,12 +298,17 @@ export default function App() {
     }, 4000);
 
     const onFocus = () => syncWithCloud();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') syncWithCloud();
+    };
     window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
       unsubscribeFirestore();
       clearInterval(interval);
       window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
 
