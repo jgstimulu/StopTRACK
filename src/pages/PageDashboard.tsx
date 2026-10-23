@@ -262,13 +262,13 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
 
         {/* HERO OEE AVAILABILITY & RELIABILITY CARD */}
         <div className="mt-4 overflow-hidden rounded-2xl border-2 border-slate-700 bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 p-4 sm:p-5 shadow-xl">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-3 border-b border-slate-800 pb-3 mb-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex min-w-0 items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/20 text-amber-400">
                 <Gauge className="h-4 w-4" />
               </div>
-              <div>
-                <h3 className="text-xs font-black uppercase tracking-wider text-slate-200">
+              <div className="min-w-0">
+                <h3 className="text-xs font-black uppercase tracking-wider text-slate-200 break-words">
                   Disponibilidade Operacional (OEE Availability)
                 </h3>
                 <p className="text-[10px] text-slate-400">
@@ -277,14 +277,14 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
               </div>
             </div>
 
-            <span className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold uppercase border ${rating.badge}`}>
+            <span className={`self-start px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold uppercase border ${rating.badge}`}>
               {rating.label}
             </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-center">
             {/* Radial Gauge SVG */}
-            <div className="md:col-span-5 flex flex-col items-center justify-center py-2">
+            <div className="xl:col-span-5 flex flex-col items-center justify-center py-2">
               <div className="relative flex items-center justify-center">
                 <svg className="w-36 h-36 transform -rotate-90">
                   {/* Background Track */}
@@ -329,11 +329,11 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
             </div>
 
             {/* Industrial Reliability Indicators (MTTR & MTBF) */}
-            <div className="md:col-span-7 grid grid-cols-2 gap-3">
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
-                <div className="flex items-center gap-1.5 text-slate-400 text-xs">
+            <div className="xl:col-span-7 grid grid-cols-2 gap-3">
+              <div className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                <div className="flex min-w-0 items-center gap-1.5 text-slate-400 text-xs">
                   <Wrench className="h-3.5 w-3.5 text-amber-400" />
-                  <span className="font-bold uppercase text-[10px]">MTTR Médio</span>
+                  <span className="min-w-0 font-bold uppercase text-[10px]">MTTR Médio</span>
                 </div>
                 <div className="mt-1 flex items-baseline gap-1">
                   <span className="text-2xl font-black font-mono text-amber-300">
@@ -346,10 +346,10 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
                 </p>
               </div>
 
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
-                <div className="flex items-center gap-1.5 text-slate-400 text-xs">
+              <div className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                <div className="flex min-w-0 items-center gap-1.5 text-slate-400 text-xs">
                   <Activity className="h-3.5 w-3.5 text-emerald-400" />
-                  <span className="font-bold uppercase text-[10px]">MTBF Estimado</span>
+                  <span className="min-w-0 font-bold uppercase text-[10px]">MTBF Estimado</span>
                 </div>
                 <div className="mt-1 flex items-baseline gap-1">
                   <span className="text-2xl font-black font-mono text-emerald-300">
@@ -362,26 +362,26 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
                 </p>
               </div>
 
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
-                <div className="flex items-center gap-1.5 text-slate-400 text-xs">
+              <div className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                <div className="flex min-w-0 items-center gap-1.5 text-slate-400 text-xs">
                   <Clock className="h-3.5 w-3.5 text-rose-400" />
-                  <span className="font-bold uppercase text-[10px]">Tempo em Paragem</span>
+                  <span className="min-w-0 font-bold uppercase text-[10px]">Tempo em Paragem</span>
                 </div>
-                <div className="mt-1 flex items-baseline gap-1">
+                <div className="mt-1 flex flex-wrap items-baseline gap-x-1">
                   <span className="text-2xl font-black font-mono text-rose-400">
                     {totalHours}
                   </span>
-                  <span className="text-xs text-slate-400 font-mono">h ({totalMinutes}m)</span>
+                  <span className="text-xs text-slate-400 font-mono break-words">h ({totalMinutes}m)</span>
                 </div>
                 <p className="text-[10px] text-slate-400 mt-0.5">
                   Total de minutos perdidos
                 </p>
               </div>
 
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
-                <div className="flex items-center gap-1.5 text-slate-400 text-xs">
+              <div className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                <div className="flex min-w-0 items-center gap-1.5 text-slate-400 text-xs">
                   <Layers className="h-3.5 w-3.5 text-sky-400" />
-                  <span className="font-bold uppercase text-[10px]">Total Intervenções</span>
+                  <span className="min-w-0 font-bold uppercase text-[10px]">Total Intervenções</span>
                 </div>
                 <div className="mt-1 flex items-baseline gap-1">
                   <span className="text-2xl font-black font-mono text-white">
@@ -592,7 +592,7 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
         </div>
 
         {/* BREAKDOWN BY PRIORITY & STATUS */}
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
           {/* Priority Breakdown */}
           <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-4">
             <div className="flex items-center gap-2 mb-3">
