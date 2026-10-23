@@ -64,6 +64,22 @@ import { PageManualEntry } from './pages/PageManualEntry';
 import { ShareModal } from './components/ShareModal';
 import { Smartphone, Monitor, CheckCircle, Server, Settings2, QrCode, Cloud, RefreshCw, Activity, Layers, Wrench } from 'lucide-react';
 
+function uniqueOperators(operators: Operator[]): Operator[] {
+  const seen = new Set<string>();
+  return operators.filter((operator) => {
+    const identity = [
+      operator.name.trim().normalize('NFKC').toLocaleLowerCase('pt-PT'),
+      operator.role.trim().normalize('NFKC').toLocaleLowerCase('pt-PT'),
+      operator.canStart,
+      operator.canClose,
+      operator.active,
+    ].join('|');
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
 export default function App() {
   // Navigation Page
   const [currentPage, setCurrentPage] = useState<AppPage>('home');
@@ -74,7 +90,7 @@ export default function App() {
       const saved = localStorage.getItem('manutrack_operators_cache');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) return uniqueOperators(parsed);
       }
     } catch {
       // Ignore
@@ -153,29 +169,11 @@ export default function App() {
       if (isSavingStoppageRef.current || syncVersion !== cloudStateVersionRef.current) return;
       setIsBackendConnected(true);
 
-      // 1. Sync Operators with local merge
+      // The API is the source of truth; stale device caches must not recreate operators.
       if (Array.isArray(state.operators)) {
-        let localOps: Operator[] = [];
-        try {
-          const savedOps = localStorage.getItem('manutrack_operators_cache');
-          if (savedOps) localOps = JSON.parse(savedOps);
-        } catch {}
-
-        const serverOpIds = new Set(state.operators.map((o: any) => o.id));
-        const missingOpsOnServer = localOps.filter((o) => o && o.id && !serverOpIds.has(o.id));
-        const mergedOps = [...state.operators, ...missingOpsOnServer];
-
-        if (mergedOps.length > 0) {
-          setOperators(mergedOps);
-          localStorage.setItem('manutrack_operators_cache', JSON.stringify(mergedOps));
-        }
-
-        // Re-push any locally saved operators if server restarted
-        if (missingOpsOnServer.length > 0) {
-          for (const op of missingOpsOnServer) {
-            apiAddOperator(op).catch(() => {});
-          }
-        }
+        const syncedOperators = uniqueOperators(state.operators);
+        setOperators(syncedOperators);
+        localStorage.setItem('manutrack_operators_cache', JSON.stringify(syncedOperators));
       }
 
       // 2. Sync Stoppage Types
@@ -254,8 +252,9 @@ export default function App() {
       },
       onOperatorsUpdate: (remoteOps) => {
         if (remoteOps.length > 0) {
-          setOperators(remoteOps);
-          localStorage.setItem('manutrack_operators_cache', JSON.stringify(remoteOps));
+          const syncedOperators = uniqueOperators(remoteOps);
+          setOperators(syncedOperators);
+          localStorage.setItem('manutrack_operators_cache', JSON.stringify(syncedOperators));
         }
       },
       onStoppageTypesUpdate: (remoteTypes) => {
@@ -310,20 +309,8 @@ export default function App() {
 
   // Operator CRUD Handlers
   const handleAddOperator = async (data: Omit<Operator, 'id' | 'active'>) => {
-    let savedOp: Operator;
-    try {
-      savedOp = await apiAddOperator(data);
-    } catch {
-      savedOp = {
-        id: `op-${Date.now()}`,
-        name: data.name,
-        role: data.role,
-        canStart: data.canStart,
-        canClose: data.canClose,
-        active: true,
-      };
-    }
-    const updated = [...operators, savedOp];
+    const savedOp = await apiAddOperator(data);
+    const updated = uniqueOperators([...operators, savedOp]);
     setOperators(updated);
     localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
     firestoreSaveOperator(savedOp).catch(() => {});
