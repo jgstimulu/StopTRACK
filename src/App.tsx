@@ -375,11 +375,10 @@ export default function App() {
   };
 
   // Page 4: "Gravar e sair" clicked -> save record to cloud database & clear machine status
-  const handleSaveAndExit = async (newRecord: StoppageRecord, operatorId: string, pin: string) => {
+  const handleSaveAndExit = async (newRecord: StoppageRecord) => {
     isSavingStoppageRef.current = true;
     cloudStateVersionRef.current += 1;
     try {
-      await apiOperatorLogin(operatorId, pin);
       await apiSaveStoppage(newRecord);
       const updatedRecords = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
       const remainingActive = activeDowntimes.filter(
@@ -418,7 +417,7 @@ export default function App() {
   // Handler for manual retrospective stoppage entry
   const handleSaveManualRecord = async (newRecord: StoppageRecord, operatorId: string, pin: string) => {
     await apiOperatorLogin(operatorId, pin);
-    await apiSaveStoppage(newRecord);
+    await apiSaveStoppage(newRecord, true);
     const updated = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
     setRecords(updated);
     localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updated));

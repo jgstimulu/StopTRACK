@@ -39,7 +39,7 @@ import { getShiftInfo } from '../utils/shift';
 interface PageCloseStoppageProps {
   activeDowntime: ActiveDowntime;
   endTimestamp: number;
-  onSaveAndExit: (record: StoppageRecord, operatorId: string, pin: string) => Promise<void>;
+  onSaveAndExit: (record: StoppageRecord) => Promise<void>;
   onCancel: () => void;
   operators?: string[];
   availableOperators?: Operator[];
@@ -87,7 +87,6 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
   // Filter operators
   const activeOps = availableOperators.filter((o) => o.active);
   const starterOps = activeOps.filter((o) => o.canStart);
-  const closerOps = activeOps.filter((o) => o.canClose);
 
   const defaultStoppageType = availableStoppageTypes.length > 0
     ? availableStoppageTypes[0].name
@@ -96,10 +95,8 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
   // Per user instruction: No automatic pre-selection of names, fields strictly mandatory!
   // initiatedBy takes whatever was explicitly chosen at start, or empty string.
   const [initiatedBy, setInitiatedBy] = useState<string>(activeDowntime.initiatedBy || '');
-  // closedBy starts strictly empty so the person closing is forced to select themselves.
+  // The selected closer is recorded for information only; closing does not require a PIN.
   const [closedBy, setClosedBy] = useState<string>('');
-  const [closedByOperatorId, setClosedByOperatorId] = useState<string>('');
-  const [closerPin, setCloserPin] = useState('');
 
   const [isCustomInitiator, setIsCustomInitiator] = useState<boolean>(
     Boolean(initiatedBy && !activeOps.some((o) => o.name === initiatedBy))
@@ -158,9 +155,6 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
     }
     if (!closedBy.trim()) {
       errs.closedBy = 'Selecione quem está a fechar a paragem';
-    }
-    if (!closedByOperatorId || !/^\d{4,8}$/.test(closerPin)) {
-      errs.closedBy = 'Selecione um operador autorizado e introduza o seu PIN individual.';
     }
     if (!shift.trim()) {
       errs.shift = 'Turno é obrigatório';
@@ -241,7 +235,7 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
 
     setIsSaving(true);
     try {
-      await onSaveAndExit(record, closedByOperatorId, closerPin);
+      await onSaveAndExit(record);
       playSuccessChime();
     } catch (error) {
       setErrors((previous) => ({
@@ -455,18 +449,15 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
           <div className="flex items-center justify-between mb-2">
             <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
               <User className={`h-3.5 w-3.5 ${errors.closedBy ? 'text-rose-400' : 'text-emerald-400'}`} />
-              <span>Quem fechou a paragem <span className="text-rose-400">*</span></span>
+              <span>Quem fechou a paragem (informativo) <span className="text-rose-400">*</span></span>
             </label>
           </div>
 
           <>
             <select
-              value={closedByOperatorId}
+              value={closedBy}
               onChange={(e) => {
-                const operator = closerOps.find((entry) => entry.id === e.target.value);
-                setClosedByOperatorId(e.target.value);
-                setClosedBy(operator?.name || '');
-                setCloserPin('');
+                setClosedBy(e.target.value);
                 if (e.target.value.trim() && errors.closedBy) {
                   setErrors((prev) => ({ ...prev, closedBy: '' }));
                 }
@@ -476,24 +467,12 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
               <option value="" className="bg-slate-900 text-slate-400">
                 -- Selecione quem está a fechar a paragem (Obrigatório) --
               </option>
-              {closerOps.map((op) => (
-                <option key={op.id} value={op.id} className="bg-slate-900 text-white">
+              {activeOps.map((op) => (
+                <option key={op.id} value={op.name} className="bg-slate-900 text-white">
                   {op.name} ({op.role})
                 </option>
               ))}
             </select>
-            {closedByOperatorId && (
-              <input
-                type="password"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                autoComplete="off"
-                value={closerPin}
-                onChange={(event) => setCloserPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
-                placeholder="PIN individual (4 a 8 dígitos)"
-                className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs text-white placeholder-slate-400 focus:border-emerald-500 focus:outline-none"
-              />
-            )}
           </>
 
           {errors.closedBy && (

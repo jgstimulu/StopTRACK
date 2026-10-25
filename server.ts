@@ -445,7 +445,7 @@ app.get('/api/stoppages', (_req, res) => {
   res.json(db.stoppages);
 });
 
-app.post('/api/stoppages', requireOperatorPermission('canClose'), (req, res) => {
+app.post('/api/stoppages', (req, res) => {
   const db = loadDatabase();
   const record = req.body;
   if (
@@ -466,12 +466,20 @@ app.post('/api/stoppages', requireOperatorPermission('canClose'), (req, res) => 
   ) {
     return res.status(400).json({ error: 'Registo inválido.' });
   }
+  const isClosingActiveDowntime = db.activeDowntimes.some(
+    (downtime) =>
+      downtime.machineId === record.machineId &&
+      downtime.startTimestamp === record.startTimestamp
+  );
   const session = getSession(req);
-  if (session?.role === 'operator') {
-    const operator = db.operators.find((entry) => entry.id === session.operatorId);
-    if (!operator || record.closedBy !== operator.name) {
-      return res.status(403).json({ error: 'O operador autenticado deve corresponder a quem fecha a paragem.' });
-    }
+  if (
+    !isClosingActiveDowntime &&
+    session?.role !== 'admin' &&
+    !(session?.role === 'operator' && session.canClose)
+  ) {
+    return res.status(session ? 403 : 401).json({
+      error: 'É necessária uma sessão de operador autorizado para registar uma paragem manual.',
+    });
   }
 
   // Ensure shift is stored in the database record

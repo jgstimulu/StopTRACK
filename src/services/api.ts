@@ -155,10 +155,10 @@ export async function apiCancelActiveDowntime(machineId: string): Promise<void> 
   if (!res.ok) throw await responseError(res, 'Falha ao cancelar paragem ativa.');
 }
 
-export async function apiSaveStoppage(record: StoppageRecord): Promise<StoppageRecord> {
+export async function apiSaveStoppage(record: StoppageRecord, requireOperatorAuth = false): Promise<StoppageRecord> {
   const res = await fetch('/api/stoppages', {
     method: 'POST',
-    headers: getOperatorHeaders(),
+    headers: requireOperatorAuth ? getOperatorHeaders() : { 'Content-Type': 'application/json' },
     body: JSON.stringify(record),
   });
   if (!res.ok) throw await responseError(res, 'Falha ao guardar paragem na nuvem.');
