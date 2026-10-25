@@ -179,8 +179,8 @@ export default function App() {
       ) return;
       setIsBackendConnected(true);
 
-      // The API is the source of truth; stale device caches must not recreate operators.
-      if (Array.isArray(state.operators)) {
+      // Keep cached operators when the API is empty; Firestore supplies the shared operator list.
+      if (Array.isArray(state.operators) && state.operators.length > 0) {
         const syncedOperators = uniqueOperators(state.operators);
         setOperators(syncedOperators);
         localStorage.setItem('manutrack_operators_cache', JSON.stringify(syncedOperators));
@@ -270,11 +270,9 @@ export default function App() {
         }
       },
       onOperatorsUpdate: (remoteOps) => {
-        if (remoteOps.length > 0) {
-          const syncedOperators = uniqueOperators(remoteOps);
-          setOperators(syncedOperators);
-          localStorage.setItem('manutrack_operators_cache', JSON.stringify(syncedOperators));
-        }
+        const syncedOperators = uniqueOperators(remoteOps);
+        setOperators(syncedOperators);
+        localStorage.setItem('manutrack_operators_cache', JSON.stringify(syncedOperators));
       },
       onStoppageTypesUpdate: (remoteTypes) => {
         if (remoteTypes.length > 0) {
@@ -288,7 +286,7 @@ export default function App() {
     });
 
     // 2. Seed initial data to Firestore if Firestore is empty
-    firestoreSeedIfEmpty(records, operators, stoppageTypes).catch(() => {});
+    firestoreSeedIfEmpty(records, [], stoppageTypes).catch(() => {});
 
     // 3. Fallback sync with local backend
     syncWithCloud();
