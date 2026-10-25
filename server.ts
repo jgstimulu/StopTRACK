@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -33,16 +34,13 @@ const DEFAULT_STOPPAGE_TYPES = [
 
 const DEFAULT_STOPPAGES_SEED: any[] = [];
 
-// Admin Credentials
-const DEFAULT_ADMIN = {
-  email: 'jricardosbd@gmail.com',
-  password: 'admin2026', // Palavra-passe mestre inicial configurável pelo utilizador
-  pin: '2026', // PIN rápido de 4 dígitos para confirmações de eliminação
-  updatedAt: Date.now(),
-};
+const SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
+const PIN_PATTERN = /^\d{4,8}$/;
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 interface DatabaseSchema {
-  admin: typeof DEFAULT_ADMIN;
+  admin: { email: string; passwordSalt: string; passwordHash: string; updatedAt: number };
   operators: any[];
   stoppageTypes: typeof DEFAULT_STOPPAGE_TYPES;
   activeDowntimes: any[];
@@ -50,42 +48,54 @@ interface DatabaseSchema {
   updatedAt: number;
 }
 
-function operatorIdentity(operator: any): string | null {
-  if (!operator || typeof operator.name !== 'string' || !operator.name.trim()) return null;
-  return [
-    operator.name.trim().normalize('NFKC').toLocaleLowerCase('pt-PT'),
-    String(operator.role || 'Operador').trim().normalize('NFKC').toLocaleLowerCase('pt-PT'),
-    Boolean(operator.canStart),
-    Boolean(operator.canClose),
-    operator.active !== false,
-  ].join('|');
-}
-
-function removeDuplicateOperators(operators: any[]): any[] {
-  const seen = new Set<string>();
-  return operators.filter((operator) => {
-    const identity = operatorIdentity(operator);
-    if (!identity) return true;
-    if (seen.has(identity)) return false;
-    seen.add(identity);
-    return true;
-  });
-}
-
-function hasClosedStoppageFor(downtime: any, stoppages: any[]): boolean {
-  if (!downtime || typeof downtime.machineId !== 'string' || !Number.isFinite(downtime.startTimestamp)) {
-    return false;
+type Session = {
+  role: 'admin' | 'operator';
+  operatorId?: string;
+  canStart?: boolean;
+  canClose?: boolean;
+  expiresAt: number;
+};
+const sessions = new Map<string, Session>();
+const pinLoginFailures = new Map<string, { count: number; lockedUntil: number }>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, session] of sessions) {
+    if (session.expiresAt <= now) sessions.delete(token);
   }
-  return stoppages.some(
-    (record) =>
-      typeof record?.machineId === 'string' &&
-      record.machineId.toUpperCase() === downtime.machineId.toUpperCase() &&
-      record.startTimestamp === downtime.startTimestamp
-  );
+  for (const [ip, failure] of pinLoginFailures) {
+    if (failure.lockedUntil <= now && failure.count === 0) pinLoginFailures.delete(ip);
+  }
+}, 10 * 60 * 1000).unref();
+
+function hashSecret(secret: string, salt: string): string {
+  return crypto.scryptSync(secret, salt, 64).toString('hex');
 }
 
-// Active in-memory session tokens
-const activeAdminTokens = new Set<string>();
+function createSecretHash(secret: string): { salt: string; hash: string } {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return { salt, hash: hashSecret(secret, salt) };
+}
+
+function verifySecret(secret: string, salt: string, expectedHash: string): boolean {
+  if (secret.length > 256 || !salt || !/^[a-f0-9]{128}$/i.test(expectedHash)) return false;
+  const actual = Buffer.from(hashSecret(secret, salt), 'hex');
+  const expected = Buffer.from(expectedHash, 'hex');
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+function publicOperator(operator: any) {
+  const visible = { ...operator };
+  for (const field of Object.keys(visible)) {
+    if (/^(pin|pinCode|pinHash|pinSalt|password|passwordHash|passwordSalt)$/i.test(field)) {
+      delete visible[field];
+    }
+  }
+  return visible;
+}
+
+function publicOperators(operators: any[]) {
+  return operators.map(publicOperator);
+}
 
 /**
  * Calcula o turno industrial com base nas regras:
@@ -129,109 +139,122 @@ function computeShift(dateOrTimestamp?: any, timeStr?: string): string {
 }
 
 function loadDatabase(): DatabaseSchema {
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    if (fs.existsSync(DB_FILE)) {
-      const data = fs.readFileSync(DB_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      const sourceOperators = Array.isArray(parsed.operators) ? parsed.operators : [];
-      const sourceActiveDowntimes = Array.isArray(parsed.activeDowntimes) ? parsed.activeDowntimes : [];
-      const operators = removeDuplicateOperators(sourceOperators);
-      const stoppages = Array.isArray(parsed.stoppages) ? parsed.stoppages : [];
-      const activeDowntimes = sourceActiveDowntimes.filter(
-        (downtime: any) => !hasClosedStoppageFor(downtime, stoppages)
-      );
-      const db: DatabaseSchema = {
-        admin: {
-          email: parsed.admin?.email || DEFAULT_ADMIN.email,
-          password: parsed.admin?.password || DEFAULT_ADMIN.password,
-          pin: parsed.admin?.pin || DEFAULT_ADMIN.pin || '2026',
-          updatedAt: parsed.admin?.updatedAt || Date.now(),
-        },
-        operators,
-        stoppageTypes: parsed.stoppageTypes || DEFAULT_STOPPAGE_TYPES,
-        activeDowntimes,
-        stoppages,
-        updatedAt: parsed.updatedAt || Date.now(),
-      };
-      if (operators.length !== sourceOperators.length || activeDowntimes.length !== sourceActiveDowntimes.length) {
-        saveDatabase(db);
-      }
-      return db;
-    }
-  } catch (err) {
-    console.error('Error loading db.json, using defaults:', err);
-  }
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  const parsed = fs.existsSync(DB_FILE)
+    ? JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'))
+    : {};
+  let admin = parsed.admin;
+  let needsSave = !fs.existsSync(DB_FILE);
 
-  const initialDb: DatabaseSchema = {
-    admin: DEFAULT_ADMIN,
-    operators: [],
-    stoppageTypes: DEFAULT_STOPPAGE_TYPES,
-    activeDowntimes: [],
-    stoppages: [],
-    updatedAt: Date.now(),
+  if (!admin?.passwordSalt || !admin?.passwordHash) {
+    if (
+      !ADMIN_EMAIL ||
+      ADMIN_EMAIL.length > 254 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ADMIN_EMAIL) ||
+      !ADMIN_PASSWORD ||
+      ADMIN_PASSWORD.length < 12 ||
+      ADMIN_PASSWORD.length > 256
+    ) {
+      throw new Error('Configure ADMIN_EMAIL e ADMIN_PASSWORD (mínimo 12 caracteres) antes de iniciar o servidor.');
+    }
+    const password = createSecretHash(ADMIN_PASSWORD);
+    admin = {
+      email: ADMIN_EMAIL,
+      passwordSalt: password.salt,
+      passwordHash: password.hash,
+      updatedAt: Date.now(),
+    };
+    needsSave = true;
+  }
+  if (
+    typeof admin.email !== 'string' ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(admin.email) ||
+    !/^[a-f0-9]{32}$/i.test(admin.passwordSalt) ||
+    !/^[a-f0-9]{128}$/i.test(admin.passwordHash)
+  ) {
+    throw new Error('As credenciais administrativas guardadas são inválidas; verifique data/db.json e a configuração inicial.');
+  }
+  admin = {
+    email: admin.email,
+    passwordSalt: admin.passwordSalt,
+    passwordHash: admin.passwordHash,
+    updatedAt: Number.isFinite(admin.updatedAt) ? admin.updatedAt : Date.now(),
   };
-  saveDatabase(initialDb);
-  return initialDb;
+
+  const operators = Array.isArray(parsed.operators) ? parsed.operators : [];
+  const db: DatabaseSchema = {
+    admin,
+    operators,
+    stoppageTypes: Array.isArray(parsed.stoppageTypes) ? parsed.stoppageTypes : DEFAULT_STOPPAGE_TYPES,
+    activeDowntimes: Array.isArray(parsed.activeDowntimes) ? parsed.activeDowntimes : [],
+    stoppages: Array.isArray(parsed.stoppages) ? parsed.stoppages : [],
+    updatedAt: parsed.updatedAt || Date.now(),
+  };
+  if (needsSave) saveDatabase(db);
+  return db;
 }
 
 function saveDatabase(db: DatabaseSchema) {
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    db.updatedAt = Date.now();
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving db.json:', err);
-  }
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  db.updatedAt = Date.now();
+  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
 }
 
-// Middleware: Require Admin Authentication for configuration modifications
+function createSession(session: Omit<Session, 'expiresAt'>): string {
+  const token = crypto.randomUUID();
+  sessions.set(token, { ...session, expiresAt: Date.now() + SESSION_DURATION_MS });
+  return token;
+}
+
+function getSession(req: express.Request): Session | undefined {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) return undefined;
+  const token = header.slice(7);
+  const session = sessions.get(token);
+  if (!session || session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    return undefined;
+  }
+  return session;
+}
+
 function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({
-      error: 'Acesso Restrito: É necessário iniciar sessão como Administrador para alterar o backend.',
-    });
+  if (getSession(req)?.role !== 'admin') {
+    return res.status(401).json({ error: 'É necessária uma sessão válida de administrador.' });
   }
-
-  const token = authHeader.split(' ')[1];
-  if (!token || !activeAdminTokens.has(token)) {
-    return res.status(401).json({
-      error: 'Sessão de Administrador expirada ou inválida. Por favor, inicie sessão novamente.',
-    });
-  }
-
   next();
 }
 
+function requireOperatorPermission(permission: 'canStart' | 'canClose') {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const session = getSession(req);
+    if (session?.role === 'admin' || (session?.role === 'operator' && session[permission])) {
+      return next();
+    }
+    return res.status(session ? 403 : 401).json({
+      error: session ? 'O operador não tem permissão para esta ação.' : 'Autentique-se com o PIN de um operador autorizado.',
+    });
+  };
+}
 // REST API ROUTES
 
 // 1. Admin Authentication Routes
 app.post('/api/admin/login', (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
+  const { email, password } = req.body || {};
+  if (typeof email !== 'string' || email.length > 254 || typeof password !== 'string' || password.length > 256) {
     return res.status(400).json({ error: 'Email e palavra-passe são obrigatórios.' });
   }
 
   const db = loadDatabase();
   const normalizedEmail = email.trim().toLowerCase();
-  const adminEmail = db.admin.email.trim().toLowerCase();
-
-  // Allow either exact email match or 'admin' shortcut for the registered owner
-  const isEmailMatch = normalizedEmail === adminEmail || normalizedEmail === 'admin';
-  const isPasswordMatch = password.trim() === db.admin.password;
-
-  if (!isEmailMatch || !isPasswordMatch) {
+  if (
+    normalizedEmail !== db.admin.email.trim().toLowerCase() ||
+    !verifySecret(password, db.admin.passwordSalt, db.admin.passwordHash)
+  ) {
     return res.status(401).json({ error: 'Credenciais de administrador incorretas.' });
   }
 
-  // Generate secure session token
-  const token = `adm_${crypto.randomUUID()}_${Date.now()}`;
-  activeAdminTokens.add(token);
+  const token = createSession({ role: 'admin' });
 
   res.json({
     success: true,
@@ -244,12 +267,7 @@ app.post('/api/admin/login', (req, res) => {
 });
 
 app.get('/api/admin/me', (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.json({ authenticated: false });
-  }
-  const token = authHeader.split(' ')[1];
-  if (!activeAdminTokens.has(token)) {
+  if (getSession(req)?.role !== 'admin') {
     return res.json({ authenticated: false });
   }
   const db = loadDatabase();
@@ -266,34 +284,83 @@ app.post('/api/admin/change-credentials', requireAdminAuth, (req, res) => {
   const { currentPassword, newPassword, newEmail } = req.body;
   const db = loadDatabase();
 
-  if (currentPassword !== db.admin.password) {
-    return res.status(400).json({ error: 'A palavra-passe atual está incorreta.' });
+  if (
+    typeof currentPassword !== 'string' ||
+    !verifySecret(currentPassword, db.admin.passwordSalt, db.admin.passwordHash)
+  ) {
+    return res.status(401).json({ error: 'A palavra-passe atual está incorreta.' });
   }
 
-  if (newPassword && newPassword.trim().length >= 4) {
-    db.admin.password = newPassword.trim();
+  if (newPassword !== undefined) {
+    if (typeof newPassword !== 'string' || newPassword.length < 12 || newPassword.length > 256) {
+      return res.status(400).json({ error: 'A nova palavra-passe deve conter entre 12 e 256 caracteres.' });
+    }
+    const password = createSecretHash(newPassword);
+    db.admin.passwordSalt = password.salt;
+    db.admin.passwordHash = password.hash;
   }
 
-  if (newEmail && newEmail.trim().includes('@')) {
+  if (newEmail !== undefined) {
+    if (typeof newEmail !== 'string' || newEmail.trim().length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail.trim())) {
+      return res.status(400).json({ error: 'Introduza um endereço de email válido.' });
+    }
     db.admin.email = newEmail.trim().toLowerCase();
-  }
-
-  if (req.body.newPin && typeof req.body.newPin === 'string' && req.body.newPin.trim().length >= 4) {
-    db.admin.pin = req.body.newPin.trim();
   }
 
   db.admin.updatedAt = Date.now();
   saveDatabase(db);
-
-  res.json({ success: true, email: db.admin.email, pin: db.admin.pin });
+  for (const [token, session] of sessions) {
+    if (session.role === 'admin') sessions.delete(token);
+  }
+  const token = createSession({ role: 'admin' });
+  res.json({ success: true, token, email: db.admin.email });
 });
 
 app.post('/api/admin/logout', (req, res) => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.split(' ')[1];
-    activeAdminTokens.delete(token);
+    sessions.delete(authHeader.slice(7));
   }
+  res.json({ success: true });
+});
+
+app.post('/api/operators/login', (req, res) => {
+  const clientKey = req.ip || 'unknown';
+  const failure = pinLoginFailures.get(clientKey);
+  if (failure && failure.lockedUntil > Date.now()) {
+    return res.status(429).json({ error: 'Demasiadas tentativas. Aguarde 15 minutos antes de tentar novamente.' });
+  }
+  const { operatorId, pin } = req.body || {};
+  if (typeof operatorId !== 'string' || typeof pin !== 'string' || !PIN_PATTERN.test(pin)) {
+    return res.status(400).json({ error: 'Selecione o operador e introduza um PIN válido.' });
+  }
+  const db = loadDatabase();
+  const operator = db.operators.find((entry) => entry.id === operatorId && entry.active);
+  if (
+    !operator?.pinSalt ||
+    !operator?.pinHash ||
+    !verifySecret(pin, operator.pinSalt, operator.pinHash)
+  ) {
+    const nextCount = (failure?.count || 0) + 1;
+    pinLoginFailures.set(clientKey, {
+      count: nextCount >= 5 ? 0 : nextCount,
+      lockedUntil: nextCount >= 5 ? Date.now() + 15 * 60 * 1000 : 0,
+    });
+    return res.status(401).json({ error: 'PIN incorreto ou operador sem PIN configurado.' });
+  }
+  pinLoginFailures.delete(clientKey);
+  const token = createSession({
+    role: 'operator',
+    operatorId: operator.id,
+    canStart: Boolean(operator.canStart),
+    canClose: Boolean(operator.canClose),
+  });
+  res.json({ success: true, token, operator: publicOperator(operator) });
+});
+
+app.post('/api/operators/logout', (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) sessions.delete(authHeader.slice(7));
   res.json({ success: true });
 });
 
@@ -301,11 +368,10 @@ app.post('/api/admin/logout', (req, res) => {
 app.get('/api/state', (_req, res) => {
   const db = loadDatabase();
   res.json({
-    operators: db.operators,
+    operators: publicOperators(db.operators),
     stoppageTypes: db.stoppageTypes,
     activeDowntimes: db.activeDowntimes,
     stoppages: db.stoppages,
-    adminEmail: db.admin.email,
     serverTime: Date.now(),
     updatedAt: db.updatedAt,
   });
@@ -320,11 +386,34 @@ app.get('/api/active-stoppages', (_req, res) => {
 app.post('/api/active-stoppages', (req, res) => {
   const db = loadDatabase();
   const downtime = req.body;
-  if (!downtime || !downtime.machineId) {
-    return res.status(400).json({ error: 'machineId é obrigatório.' });
+  if (
+    !downtime ||
+    typeof downtime.machineId !== 'string' ||
+    !/^[A-Z0-9_-]{1,64}$/.test(downtime.machineId) ||
+    typeof downtime.id !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(downtime.id) ||
+    !Number.isFinite(downtime.startTimestamp) ||
+    downtime.startTimestamp <= 0 ||
+    typeof downtime.initiatedBy !== 'string' ||
+    downtime.initiatedBy.length > 128
+  ) {
+    return res.status(400).json({ error: 'Dados da paragem ativa inválidos.' });
   }
-  if (hasClosedStoppageFor(downtime, db.stoppages)) {
-    return res.status(409).json({ error: 'Esta paragem já foi encerrada e não pode voltar a ficar ativa.' });
+  const session = getSession(req);
+  const existing = db.activeDowntimes.some((entry) => entry.machineId === downtime.machineId);
+  if (
+    session?.role !== 'admin' &&
+    !(session?.role === 'operator' && (existing ? session.canClose : session.canStart))
+  ) {
+    return res.status(session ? 403 : 401).json({
+      error: existing ? 'É necessária a permissão para atualizar paragens.' : 'É necessária a permissão para iniciar paragens.',
+    });
+  }
+  if (!existing && session?.role === 'operator') {
+    const operator = db.operators.find((entry) => entry.id === session.operatorId);
+    if (!operator || downtime.initiatedBy !== operator.name) {
+      return res.status(403).json({ error: 'O operador autenticado deve corresponder a quem iniciou a paragem.' });
+    }
   }
 
   // Auto-assign shift if not explicitly provided
@@ -333,20 +422,19 @@ app.post('/api/active-stoppages', (req, res) => {
   }
 
   // Remove existing active downtime on this machine if any
-  db.activeDowntimes = db.activeDowntimes.filter(
-    (d) => d.machineId.toUpperCase() !== downtime.machineId.toUpperCase()
-  );
+  db.activeDowntimes = db.activeDowntimes.filter((d) => d.machineId !== downtime.machineId);
   db.activeDowntimes.push(downtime);
   saveDatabase(db);
   res.status(201).json(downtime);
 });
 
-app.delete('/api/active-stoppages/:machineId', (req, res) => {
+app.delete('/api/active-stoppages/:machineId', requireOperatorPermission('canClose'), (req, res) => {
   const db = loadDatabase();
   const { machineId } = req.params;
-  db.activeDowntimes = db.activeDowntimes.filter(
-    (d) => d.machineId.toUpperCase() !== machineId.toUpperCase()
-  );
+  if (!/^[A-Z0-9_-]{1,64}$/.test(machineId)) {
+    return res.status(400).json({ error: 'Identificador de máquina inválido.' });
+  }
+  db.activeDowntimes = db.activeDowntimes.filter((d) => d.machineId !== machineId);
   saveDatabase(db);
   res.json({ success: true, machineId });
 });
@@ -357,11 +445,33 @@ app.get('/api/stoppages', (_req, res) => {
   res.json(db.stoppages);
 });
 
-app.post('/api/stoppages', (req, res) => {
+app.post('/api/stoppages', requireOperatorPermission('canClose'), (req, res) => {
   const db = loadDatabase();
   const record = req.body;
-  if (!record || !record.id) {
+  if (
+    !record ||
+    typeof record.id !== 'string' ||
+    record.id.length < 1 ||
+    record.id.length > 128 ||
+    typeof record.machineId !== 'string' ||
+    !/^[A-Z0-9_-]{1,64}$/.test(record.machineId) ||
+    typeof record.closedBy !== 'string' ||
+    record.closedBy.length > 128 ||
+    typeof record.initiatedBy !== 'string' ||
+    record.initiatedBy.length > 128 ||
+    !Number.isFinite(record.startTimestamp) ||
+    !Number.isFinite(record.endTimestamp) ||
+    record.startTimestamp <= 0 ||
+    record.endTimestamp < record.startTimestamp
+  ) {
     return res.status(400).json({ error: 'Registo inválido.' });
+  }
+  const session = getSession(req);
+  if (session?.role === 'operator') {
+    const operator = db.operators.find((entry) => entry.id === session.operatorId);
+    if (!operator || record.closedBy !== operator.name) {
+      return res.status(403).json({ error: 'O operador autenticado deve corresponder a quem fecha a paragem.' });
+    }
   }
 
   // Ensure shift is stored in the database record
@@ -381,9 +491,7 @@ app.post('/api/stoppages', (req, res) => {
   db.stoppages = [record, ...db.stoppages.filter((s) => s.id !== record.id)];
   // Also clear machine from active downtimes if present
   if (record.machineId) {
-    db.activeDowntimes = db.activeDowntimes.filter(
-      (d) => d.machineId.toUpperCase() !== record.machineId.toUpperCase()
-    );
+    db.activeDowntimes = db.activeDowntimes.filter((d) => d.machineId !== record.machineId);
   }
   saveDatabase(db);
   res.status(201).json(record);
@@ -392,55 +500,51 @@ app.post('/api/stoppages', (req, res) => {
 app.delete('/api/stoppages/:id', (req, res) => {
   const db = loadDatabase();
   const { id } = req.params;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador inv�lido.' });
+  }
 
-  // Verify authorization: either Admin Session Bearer Token OR Quick PIN / Admin Password
-  const authHeader = req.headers.authorization;
+  const session = getSession(req);
   const pinHeader = req.headers['x-deletion-pin'];
   const pinBody = req.body?.pin;
   const providedPin = (pinHeader || pinBody || '').toString().trim();
-
-  let isAuthorized = false;
-
-  // 1. Bearer Token Check
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.split(' ')[1];
-    if (token && activeAdminTokens.has(token)) {
-      isAuthorized = true;
-    }
-  }
-
-  // 2. PIN or Master Admin Password Check
-  const validPin = (db.admin.pin || '2026').trim();
-  const adminPassword = (db.admin.password || 'admin2026').trim();
-
-  if (
-    providedPin &&
-    (providedPin === validPin ||
-      providedPin === adminPassword ||
-      providedPin === '2026' ||
-      providedPin === 'admin2026')
-  ) {
-    isAuthorized = true;
-  }
-
+  const operatorPinValid = PIN_PATTERN.test(providedPin) && db.operators.some((operator) =>
+    operator.active &&
+    operator.canClose &&
+    operator.pinSalt &&
+    operator.pinHash &&
+    verifySecret(providedPin, operator.pinSalt, operator.pinHash)
+  );
+  const isAuthorized = session?.role === 'admin' ||
+    (session?.role === 'operator' && session.canClose) ||
+    operatorPinValid;
   if (!isAuthorized) {
-    return res.status(401).json({
-      error: 'PIN de segurança incorreto. Introduza o PIN de autorização para eliminar.',
-    });
+    return res.status(401).json({ error: 'PIN de operador autorizado incorreto.' });
   }
 
   const initialCount = db.stoppages.length;
-  db.stoppages = db.stoppages.filter((s) => s.id !== id);
+  db.stoppages = db.stoppages.filter((record) => record.id !== id);
   saveDatabase(db);
   res.json({ success: true, id, deletedCount: initialCount - db.stoppages.length });
 });
-
 // 5. Migration & CSV Batch Import (Protected by requireAdminAuth)
-app.post('/api/migrate-local', (req, res) => {
+app.post('/api/migrate-local', requireAdminAuth, (req, res) => {
   const db = loadDatabase();
-  const { localRecords } = req.body;
-  if (!Array.isArray(localRecords)) {
-    return res.status(400).json({ error: 'localRecords deve ser um array.' });
+  const { localRecords } = req.body || {};
+  if (
+    !Array.isArray(localRecords) ||
+    localRecords.length > 10000 ||
+    localRecords.some((record) =>
+      !record ||
+      typeof record.id !== 'string' ||
+      record.id.length < 1 ||
+      record.id.length > 128 ||
+      typeof record.machineId !== 'string' ||
+      !/^[A-Z0-9_-]{1,64}$/.test(record.machineId) ||
+      !Number.isFinite(record.startTimestamp)
+    )
+  ) {
+    return res.status(400).json({ error: 'localRecords deve conter no máximo 10 000 registos válidos.' });
   }
 
   const existingIds = new Set(db.stoppages.map((s) => s.id));
@@ -470,9 +574,22 @@ app.post('/api/migrate-local', (req, res) => {
 
 app.post('/api/stoppages/batch-import', requireAdminAuth, (req, res) => {
   const db = loadDatabase();
-  const { records, replaceExisting } = req.body;
-  if (!Array.isArray(records)) {
-    return res.status(400).json({ error: 'records deve ser um array.' });
+  const { records, replaceExisting = false } = req.body || {};
+  if (
+    !Array.isArray(records) ||
+    records.length > 10000 ||
+    typeof replaceExisting !== 'boolean' ||
+    records.some((record) =>
+      !record ||
+      typeof record.id !== 'string' ||
+      record.id.length < 1 ||
+      record.id.length > 128 ||
+      typeof record.machineId !== 'string' ||
+      !/^[A-Z0-9_-]{1,64}$/.test(record.machineId) ||
+      !Number.isFinite(record.startTimestamp)
+    )
+  ) {
+    return res.status(400).json({ error: 'records deve conter no máximo 10 000 registos válidos.' });
   }
 
   // Ensure all imported records have shift, priority, and status calculated if missing
@@ -533,61 +650,129 @@ app.post('/api/stoppages/batch-import', requireAdminAuth, (req, res) => {
 // 6. Operators Management (Protected by requireAdminAuth)
 app.get('/api/operators', (_req, res) => {
   const db = loadDatabase();
-  res.json(db.operators);
+  res.json(publicOperators(db.operators));
 });
 
 app.post('/api/operators', requireAdminAuth, (req, res) => {
   const db = loadDatabase();
-  const { name, role, canStart, canClose } = req.body;
-  if (!name || typeof name !== 'string') {
-    return res.status(400).json({ error: 'Nome do operador é obrigatório.' });
+  const { name, role, canStart, canClose, pin } = req.body || {};
+  if (
+    typeof name !== 'string' ||
+    !name.trim() ||
+    name.trim().length > 128 ||
+    typeof pin !== 'string' ||
+    !PIN_PATTERN.test(pin) ||
+    typeof canStart !== 'boolean' ||
+    typeof canClose !== 'boolean'
+  ) {
+    return res.status(400).json({ error: 'Nome, PIN de 4 a 8 dígitos e permissões válidas são obrigatórios.' });
+  }
+  if (db.operators.some((operator) => operator.pinSalt && operator.pinHash && verifySecret(pin, operator.pinSalt, operator.pinHash))) {
+    return res.status(409).json({ error: 'Este PIN já está atribuído a outro operador.' });
+  }
+  if (db.operators.some((operator) =>
+    typeof operator.name === 'string' &&
+    operator.name.trim().toLowerCase() === name.trim().toLowerCase()
+  )) {
+    return res.status(409).json({ error: 'Já existe um operador com esse nome.' });
   }
 
+  const pinCredential = createSecretHash(pin);
   const newOp = {
-    id: `op-${Date.now()}`,
+    id: `op-${crypto.randomUUID()}`,
     name: name.trim(),
-    role: (role || 'Operador').trim(),
-    canStart: Boolean(canStart),
-    canClose: Boolean(canClose),
+    role: typeof role === 'string' && role.trim() ? role.trim().slice(0, 128) : 'Operador',
+    canStart,
+    canClose,
     active: true,
+    pinSalt: pinCredential.salt,
+    pinHash: pinCredential.hash,
   };
-
-  const identity = operatorIdentity(newOp);
-  const existing = db.operators.find((operator) => operatorIdentity(operator) === identity);
-  if (existing) {
-    return res.json(existing);
-  }
 
   db.operators.push(newOp);
   saveDatabase(db);
-  res.status(201).json(newOp);
+  res.status(201).json(publicOperator(newOp));
 });
 
 app.put('/api/operators/:id', requireAdminAuth, (req, res) => {
   const db = loadDatabase();
   const { id } = req.params;
-  const { name, role, canStart, canClose, active } = req.body;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador de operador inválido.' });
+  }
+  const { name, role, canStart, canClose, active, pin } = req.body || {};
 
   const idx = db.operators.findIndex((o) => o.id === id);
   if (idx === -1) {
     return res.status(404).json({ error: 'Operador não encontrado.' });
   }
 
-  if (name !== undefined) db.operators[idx].name = name.trim();
-  if (role !== undefined) db.operators[idx].role = role.trim();
-  if (canStart !== undefined) db.operators[idx].canStart = Boolean(canStart);
-  if (canClose !== undefined) db.operators[idx].canClose = Boolean(canClose);
-  if (active !== undefined) db.operators[idx].active = Boolean(active);
+  if (name !== undefined) {
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 128) {
+      return res.status(400).json({ error: 'Nome de operador inválido.' });
+    }
+    if (db.operators.some((operator) =>
+      operator.id !== id &&
+      typeof operator.name === 'string' &&
+      operator.name.trim().toLowerCase() === name.trim().toLowerCase()
+    )) {
+      return res.status(409).json({ error: 'Já existe um operador com esse nome.' });
+    }
+    db.operators[idx].name = name.trim();
+  }
+  if (role !== undefined) {
+    if (typeof role !== 'string' || role.trim().length > 128) {
+      return res.status(400).json({ error: 'Função de operador inválida.' });
+    }
+    db.operators[idx].role = role.trim() || 'Operador';
+  }
+  if (canStart !== undefined) {
+    if (typeof canStart !== 'boolean') return res.status(400).json({ error: 'Permissão inválida.' });
+    db.operators[idx].canStart = canStart;
+  }
+  if (canClose !== undefined) {
+    if (typeof canClose !== 'boolean') return res.status(400).json({ error: 'Permissão inválida.' });
+    db.operators[idx].canClose = canClose;
+  }
+  if (active !== undefined) {
+    if (typeof active !== 'boolean') return res.status(400).json({ error: 'Estado inválido.' });
+    db.operators[idx].active = active;
+  }
+  if (pin !== undefined) {
+    if (typeof pin !== 'string' || !PIN_PATTERN.test(pin)) {
+      return res.status(400).json({ error: 'O PIN deve conter entre 4 e 8 dígitos.' });
+    }
+    if (db.operators.some((operator) =>
+      operator.id !== id &&
+      operator.pinSalt &&
+      operator.pinHash &&
+      verifySecret(pin, operator.pinSalt, operator.pinHash)
+    )) {
+      return res.status(409).json({ error: 'Este PIN já está atribuído a outro operador.' });
+    }
+    const pinCredential = createSecretHash(pin);
+    db.operators[idx].pinSalt = pinCredential.salt;
+    db.operators[idx].pinHash = pinCredential.hash;
+  }
 
   saveDatabase(db);
-  res.json(db.operators[idx]);
+  for (const [token, session] of sessions) {
+    if (session.operatorId === id) sessions.delete(token);
+  }
+  res.json(publicOperator(db.operators[idx]));
 });
 
 app.delete('/api/operators/:id', requireAdminAuth, (req, res) => {
   const db = loadDatabase();
   const { id } = req.params;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador de operador inválido.' });
+  }
   db.operators = db.operators.filter((o) => o.id !== id);
   saveDatabase(db);
+  for (const [token, session] of sessions) {
+    if (session.operatorId === id) sessions.delete(token);
+  }
   res.json({ success: true, id });
 });
 
@@ -599,16 +784,16 @@ app.get('/api/stoppage-types', (_req, res) => {
 
 app.post('/api/stoppage-types', requireAdminAuth, (req, res) => {
   const db = loadDatabase();
-  const { name, description, color } = req.body;
-  if (!name || typeof name !== 'string') {
+  const { name, description, color } = req.body || {};
+  if (typeof name !== 'string' || !name.trim() || name.trim().length > 128) {
     return res.status(400).json({ error: 'Nome do tipo de avaria é obrigatório.' });
   }
 
   const newType = {
-    id: `st-${Date.now()}`,
+    id: `st-${crypto.randomUUID()}`,
     name: name.trim(),
-    description: (description || '').trim(),
-    color: color || 'rose',
+    description: typeof description === 'string' ? description.trim().slice(0, 500) : '',
+    color: typeof color === 'string' && /^[a-z-]{1,32}$/.test(color) ? color : 'rose',
     active: true,
   };
 
@@ -620,17 +805,38 @@ app.post('/api/stoppage-types', requireAdminAuth, (req, res) => {
 app.put('/api/stoppage-types/:id', requireAdminAuth, (req, res) => {
   const db = loadDatabase();
   const { id } = req.params;
-  const { name, description, color, active } = req.body;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador de tipo inválido.' });
+  }
+  const { name, description, color, active } = req.body || {};
 
   const idx = db.stoppageTypes.findIndex((st) => st.id === id);
   if (idx === -1) {
     return res.status(404).json({ error: 'Tipo de avaria não encontrado.' });
   }
 
-  if (name !== undefined) db.stoppageTypes[idx].name = name.trim();
-  if (description !== undefined) db.stoppageTypes[idx].description = description.trim();
-  if (color !== undefined) db.stoppageTypes[idx].color = color;
-  if (active !== undefined) db.stoppageTypes[idx].active = Boolean(active);
+  if (name !== undefined) {
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 128) {
+      return res.status(400).json({ error: 'Nome do tipo de avaria inválido.' });
+    }
+    db.stoppageTypes[idx].name = name.trim();
+  }
+  if (description !== undefined) {
+    if (typeof description !== 'string' || description.length > 500) {
+      return res.status(400).json({ error: 'Descrição do tipo de avaria inválida.' });
+    }
+    db.stoppageTypes[idx].description = description.trim();
+  }
+  if (color !== undefined) {
+    if (typeof color !== 'string' || !/^[a-z-]{1,32}$/.test(color)) {
+      return res.status(400).json({ error: 'Cor do tipo de avaria inválida.' });
+    }
+    db.stoppageTypes[idx].color = color;
+  }
+  if (active !== undefined) {
+    if (typeof active !== 'boolean') return res.status(400).json({ error: 'Estado inválido.' });
+    db.stoppageTypes[idx].active = active;
+  }
 
   saveDatabase(db);
   res.json(db.stoppageTypes[idx]);
@@ -639,6 +845,9 @@ app.put('/api/stoppage-types/:id', requireAdminAuth, (req, res) => {
 app.delete('/api/stoppage-types/:id', requireAdminAuth, (req, res) => {
   const db = loadDatabase();
   const { id } = req.params;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador de tipo inválido.' });
+  }
   db.stoppageTypes = db.stoppageTypes.filter((st) => st.id !== id);
   saveDatabase(db);
   res.json({ success: true, id });
@@ -653,11 +862,16 @@ app.post('/api/reset-defaults', requireAdminAuth, (_req, res) => {
   db.stoppages = DEFAULT_STOPPAGES_SEED;
   db.updatedAt = Date.now();
   saveDatabase(db);
+  for (const [token, session] of sessions) {
+    if (session.role === 'operator') sessions.delete(token);
+  }
   res.json({ success: true });
 });
 
 // Development vs Production setup
 async function startServer() {
+  loadDatabase();
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -678,6 +892,16 @@ async function startServer() {
   });
 }
 
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('Request failed:', err);
+  if (res.headersSent) return;
+  const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
+  res.status(status).json({
+    error: status === 500 ? 'Erro interno ao processar o pedido. Os dados não foram confirmados.' : 'Pedido inválido.',
+  });
+});
+
 startServer().catch((err) => {
-  console.error('Failed to start server:', err);
+  console.error('Failed to start server:', err instanceof Error ? err.message : 'Unknown startup error');
+  process.exitCode = 1;
 });

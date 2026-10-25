@@ -33,7 +33,7 @@ import { formatDurationMs, formatTimeOnly, getLocalYMD } from '../utils/formatte
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
 
 interface PageManualEntryProps {
-  onSaveRecord: (record: StoppageRecord) => void;
+  onSaveRecord: (record: StoppageRecord, operatorId: string, pin: string) => Promise<void>;
   onBack: () => void;
   availableOperators?: Operator[];
   availableStoppageTypes?: StoppageTypeItem[];
@@ -69,8 +69,9 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
   // Operators (matching PageCloseStoppage standard)
   const [initiatedBy, setInitiatedBy] = useState<string>('');
   const [closedBy, setClosedBy] = useState<string>('');
+  const [closedByOperatorId, setClosedByOperatorId] = useState<string>('');
+  const [closerPin, setCloserPin] = useState('');
   const [isCustomInitiator, setIsCustomInitiator] = useState<boolean>(false);
-  const [isCustomCloser, setIsCustomCloser] = useState<boolean>(false);
 
   // Descriptions
   const [stoppageDescription, setStoppageDescription] = useState<string>('');
@@ -146,8 +147,9 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
     setStatus('Resolvido');
     setInitiatedBy('');
     setClosedBy('');
+    setClosedByOperatorId('');
+    setCloserPin('');
     setIsCustomInitiator(false);
-    setIsCustomCloser(false);
     setStoppageDescription('');
     setActionsTaken('');
     setOtherObservations('');
@@ -173,8 +175,8 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
     if (!initiatedBy.trim()) {
       errs.initiatedBy = 'Indique quem iniciou a paragem';
     }
-    if (!closedBy.trim()) {
-      errs.closedBy = 'Selecione quem está a fechar a paragem';
+    if (!closedBy.trim() || !closedByOperatorId || !/^\d{4,8}$/.test(closerPin)) {
+      errs.closedBy = 'Selecione um operador autorizado e introduza o seu PIN individual.';
     }
     if (!shift.trim()) {
       errs.shift = 'Turno é obrigatório';
@@ -216,18 +218,13 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
     return true;
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSaving) return;
 
     if (!validate()) {
       return;
     }
-
-    setIsSaving(true);
-    try {
-      playSuccessChime();
-    } catch {}
 
     // Format Portuguese date display DD/MM/AAAA
     let dateFormatted = entryDate;
@@ -277,7 +274,17 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
       createdAt: Date.now(),
     };
 
-    onSaveRecord(record);
+    setIsSaving(true);
+    try {
+      await onSaveRecord(record, closedByOperatorId, closerPin);
+      playSuccessChime();
+    } catch (error) {
+      setErrors((previous) => ({
+        ...previous,
+        closedBy: error instanceof Error ? error.message : 'Não foi possível guardar a paragem.',
+      }));
+      setIsSaving(false);
+    }
   };
 
   // Format Portuguese date display for summary card
@@ -661,33 +668,16 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
               />
               <span>Quem fechou a paragem <span className="text-rose-400">*</span></span>
             </label>
-            <button
-              type="button"
-              onClick={() => setIsCustomCloser(!isCustomCloser)}
-              className="text-[11px] font-medium text-emerald-400 hover:text-emerald-300"
-            >
-              {isCustomCloser ? 'Selecionar da lista' : 'Digitar outro nome'}
-            </button>
           </div>
 
-          {isCustomCloser ? (
-            <input
-              type="text"
-              value={closedBy}
-              onChange={(e) => {
-                setClosedBy(e.target.value);
-                if (e.target.value.trim() && errors.closedBy) {
-                  setErrors((prev) => ({ ...prev, closedBy: '' }));
-                }
-              }}
-              placeholder="Digite o nome de quem fechou..."
-              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs font-medium text-white placeholder-slate-400 focus:border-emerald-500 focus:outline-none"
-            />
-          ) : (
+          <>
             <select
-              value={closedBy}
+              value={closedByOperatorId}
               onChange={(e) => {
-                setClosedBy(e.target.value);
+                const operator = closerOps.find((entry) => entry.id === e.target.value);
+                setClosedByOperatorId(e.target.value);
+                setClosedBy(operator?.name || '');
+                setCloserPin('');
                 if (e.target.value.trim() && errors.closedBy) {
                   setErrors((prev) => ({ ...prev, closedBy: '' }));
                 }
@@ -698,18 +688,24 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
                 -- Selecione quem está a fechar a paragem (Obrigatório) --
               </option>
               {closerOps.map((op) => (
-                <option key={op.id} value={op.name} className="bg-slate-900 text-white">
+                <option key={op.id} value={op.id} className="bg-slate-900 text-white">
                   {op.name} ({op.role})
                 </option>
               ))}
-              {closerOps.length === 0 &&
-                activeOps.map((op) => (
-                  <option key={op.id} value={op.name} className="bg-slate-900 text-white">
-                    {op.name}
-                  </option>
-                ))}
             </select>
-          )}
+            {closedByOperatorId && (
+              <input
+                type="password"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="off"
+                value={closerPin}
+                onChange={(event) => setCloserPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
+                placeholder="PIN individual (4 a 8 dígitos)"
+                className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs text-white placeholder-slate-400 focus:border-emerald-500 focus:outline-none"
+              />
+            )}
+          </>
 
           {errors.closedBy && (
             <p className="mt-1.5 text-[11px] font-semibold text-rose-400 flex items-center gap-1">

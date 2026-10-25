@@ -16,7 +16,6 @@ import {
 } from './types/manutrack';
 import {
   MACHINES_DATA,
-  INITIAL_OPERATORS,
   INITIAL_STOPPAGE_TYPES,
   INITIAL_STOPPAGES_SEED,
 } from './data/initialData';
@@ -38,19 +37,8 @@ import {
   apiUpdateStoppageType,
   apiDeleteStoppageType,
   apiResetDefaults,
+  apiOperatorLogin,
 } from './services/api';
-import {
-  subscribeToFirestore,
-  firestoreSaveStoppage,
-  firestoreDeleteStoppage,
-  firestoreSetActiveDowntime,
-  firestoreRemoveActiveDowntime,
-  firestoreSaveOperator,
-  firestoreDeleteOperator,
-  firestoreSaveStoppageType,
-  firestoreDeleteStoppageType,
-  firestoreSeedIfEmpty,
-} from './services/firebaseSync';
 
 import { PageHome } from './pages/PageHome';
 import { PageSelectMachine } from './pages/PageSelectMachine';
@@ -64,41 +52,12 @@ import { PageManualEntry } from './pages/PageManualEntry';
 import { ShareModal } from './components/ShareModal';
 import { Smartphone, Monitor, CheckCircle, Server, Settings2, QrCode, Cloud, RefreshCw, Activity, Layers, Wrench } from 'lucide-react';
 
-function uniqueOperators(operators: Operator[]): Operator[] {
-  const seen = new Set<string>();
-  return operators.filter((operator) => {
-    const identity = [
-      operator.name.trim().normalize('NFKC').toLocaleLowerCase('pt-PT'),
-      operator.role.trim().normalize('NFKC').toLocaleLowerCase('pt-PT'),
-      operator.canStart,
-      operator.canClose,
-      operator.active,
-    ].join('|');
-    if (seen.has(identity)) return false;
-    seen.add(identity);
-    return true;
-  });
-}
-
 export default function App() {
   // Navigation Page
   const [currentPage, setCurrentPage] = useState<AppPage>('home');
-  const currentPageRef = useRef(currentPage);
-  currentPageRef.current = currentPage;
 
   // Backend state: Operators and Stoppage Types
-  const [operators, setOperators] = useState<Operator[]>(() => {
-    try {
-      const saved = localStorage.getItem('manutrack_operators_cache');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return uniqueOperators(parsed);
-      }
-    } catch {
-      // Ignore
-    }
-    return INITIAL_OPERATORS;
-  });
+  const [operators, setOperators] = useState<Operator[]>([]);
 
   const [stoppageTypes, setStoppageTypes] = useState<StoppageTypeItem[]>(() => {
     try {
@@ -128,8 +87,6 @@ export default function App() {
 
   // Current active downtime being timed or closed
   const [focusedDowntime, setFocusedDowntime] = useState<ActiveDowntime | null>(null);
-  const focusedDowntimeRef = useRef(focusedDowntime);
-  focusedDowntimeRef.current = focusedDowntime;
 
   // Timestamp when stopwatch was stopped
   const [stopEndTimestamp, setStopEndTimestamp] = useState<number>(0);
@@ -161,58 +118,40 @@ export default function App() {
 
   // Notification Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const syncRequestVersionRef = useRef(0);
 
   // Periodic Cloud Sync Function with Bidirectional Resilience (Keep all devices aligned & never wipe data)
   const syncWithCloud = async () => {
     if (isSavingStoppageRef.current) return;
     const syncVersion = cloudStateVersionRef.current;
-    const syncRequestVersion = ++syncRequestVersionRef.current;
 
     try {
       setIsSyncing(true);
       const state = await fetchSharedState();
-      if (
-        isSavingStoppageRef.current ||
-        syncVersion !== cloudStateVersionRef.current ||
-        syncRequestVersion !== syncRequestVersionRef.current
-      ) return;
+      if (isSavingStoppageRef.current || syncVersion !== cloudStateVersionRef.current) return;
       setIsBackendConnected(true);
 
-      // Keep cached operators when the API is empty; Firestore supplies the shared operator list.
-      if (Array.isArray(state.operators) && state.operators.length > 0) {
-        const syncedOperators = uniqueOperators(state.operators);
-        setOperators(syncedOperators);
-        localStorage.setItem('manutrack_operators_cache', JSON.stringify(syncedOperators));
+      // 1. Sync Operators with local merge
+      if (Array.isArray(state.operators)) {
+        setOperators(state.operators);
       }
 
       // 2. Sync Stoppage Types
-      if (state.stoppageTypes && state.stoppageTypes.length > 0) {
+      if (Array.isArray(state.stoppageTypes)) {
         setStoppageTypes(state.stoppageTypes);
         localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(state.stoppageTypes));
       }
 
       // 3. Sync Active Downtimes (merge running timers)
       if (Array.isArray(state.activeDowntimes)) {
-        setActiveDowntimes(state.activeDowntimes);
-        localStorage.setItem('manutrack_active_downtimes', JSON.stringify(state.activeDowntimes));
+        const mergedActives = state.activeDowntimes;
+        setActiveDowntimes(mergedActives);
+        localStorage.setItem('manutrack_active_downtimes', JSON.stringify(mergedActives));
 
-        // A remote close must also dismiss this device's focused timer/form.
-        const focused = focusedDowntimeRef.current;
-        if (focused) {
-          const match = state.activeDowntimes.find((d) => d.machineId === focused.machineId);
+        // If currently on timing page, ensure focused downtime still matches
+        if (focusedDowntime) {
+          const match = mergedActives.find((d) => d.machineId === focusedDowntime.machineId);
           if (match) {
             setFocusedDowntime(match);
-            focusedDowntimeRef.current = match;
-          } else {
-            setFocusedDowntime(null);
-            focusedDowntimeRef.current = null;
-            if (currentPageRef.current === 'timing' || currentPageRef.current === 'close_form') {
-              setCurrentPage('home');
-              currentPageRef.current = 'home';
-              setStopEndTimestamp(0);
-              setToastMessage(`A paragem da ${focused.machineId} foi encerrada noutro posto.`);
-            }
           }
         }
       }
@@ -223,34 +162,13 @@ export default function App() {
           (r: any) => r && r.id && !r.id.startsWith('seed-')
         );
 
-        let localRecords: StoppageRecord[] = [];
-        try {
-          const saved = localStorage.getItem('manutrack_stoppages_history');
-          if (saved) {
-            const parsed = JSON.parse(saved);
-            if (Array.isArray(parsed)) {
-              localRecords = parsed.filter((r) => r && r.id && !r.id.startsWith('seed-'));
-            }
-          }
-        } catch {}
-
-        const serverRecordIds = new Set(cleanServerStoppages.map((s: any) => s.id));
-        const missingOnServer = localRecords.filter((r) => r && r.id && !serverRecordIds.has(r.id));
-
-        // Merge both sets without duplicates
-        const mergedRecords = [...cleanServerStoppages, ...missingOnServer].sort(
+        const mergedRecords = [...cleanServerStoppages].sort(
           (a, b) => (b.startTimestamp || b.createdAt || 0) - (a.startTimestamp || a.createdAt || 0)
         );
 
         setRecords(mergedRecords);
         localStorage.setItem('manutrack_stoppages_history', JSON.stringify(mergedRecords));
 
-        // If server lost data (e.g. cloud container redeployment or restart), automatically re-seed server with client records!
-        if (missingOnServer.length > 0) {
-          apiBatchImportStoppages(missingOnServer, false).catch((err) => {
-            console.warn('Re-syncing local records to server:', err);
-          });
-        }
       }
     } catch {
       setIsBackendConnected(false);
@@ -259,36 +177,9 @@ export default function App() {
     }
   };
 
-  // Initial load, real-time Firestore subscription & cloud polling
+  // The protected Express API is the single persistence path; reads are refreshed from it.
   useEffect(() => {
-    // 1. Subscribe to real-time Firestore Cloud Database updates
-    const unsubscribeFirestore = subscribeToFirestore({
-      onStoppagesUpdate: (remoteStoppages) => {
-        if (remoteStoppages.length > 0) {
-          setRecords(remoteStoppages);
-          localStorage.setItem('manutrack_stoppages_history', JSON.stringify(remoteStoppages));
-        }
-      },
-      onOperatorsUpdate: (remoteOps) => {
-        const syncedOperators = uniqueOperators(remoteOps);
-        setOperators(syncedOperators);
-        localStorage.setItem('manutrack_operators_cache', JSON.stringify(syncedOperators));
-      },
-      onStoppageTypesUpdate: (remoteTypes) => {
-        if (remoteTypes.length > 0) {
-          setStoppageTypes(remoteTypes);
-          localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(remoteTypes));
-        }
-      },
-      onError: (err) => {
-        console.warn('Operating with cached state, waiting for Firestore sync:', err);
-      },
-    });
-
-    // 2. Seed initial data to Firestore if Firestore is empty
-    firestoreSeedIfEmpty(records, [], stoppageTypes).catch(() => {});
-
-    // 3. Fallback sync with local backend
+    localStorage.removeItem('manutrack_operators_cache');
     syncWithCloud();
 
     const interval = setInterval(() => {
@@ -296,17 +187,11 @@ export default function App() {
     }, 4000);
 
     const onFocus = () => syncWithCloud();
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') syncWithCloud();
-    };
     window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
-      unsubscribeFirestore();
       clearInterval(interval);
       window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
 
@@ -330,99 +215,51 @@ export default function App() {
   // Operator selection is strictly manual and mandatory without preselection
 
   // Operator CRUD Handlers
-  const handleAddOperator = async (data: Omit<Operator, 'id' | 'active'>) => {
-    const savedOp = await apiAddOperator(data);
-    const updated = uniqueOperators([...operators, savedOp]);
+  const handleAddOperator = async (data: Omit<Operator, 'id' | 'active'>, pin: string) => {
+    const savedOp = await apiAddOperator(data, pin);
+    const updated = [...operators, savedOp];
     setOperators(updated);
-    localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
-    firestoreSaveOperator(savedOp).catch(() => {});
   };
 
-  const handleUpdateOperator = async (id: string, data: Partial<Operator>) => {
-    try {
-      const updatedOp = await apiUpdateOperator(id, data);
-      const updated = operators.map((o) => (o.id === id ? updatedOp : o));
-      setOperators(updated);
-      localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
-      firestoreSaveOperator(updatedOp).catch(() => {});
-    } catch {
-      const updated = operators.map((o) => (o.id === id ? { ...o, ...data } : o));
-      setOperators(updated);
-      localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
-      const target = updated.find((o) => o.id === id);
-      if (target) firestoreSaveOperator(target).catch(() => {});
-    }
+  const handleUpdateOperator = async (id: string, data: Partial<Operator> & { pin?: string }) => {
+    const updatedOp = await apiUpdateOperator(id, data);
+    const updated = operators.map((o) => (o.id === id ? updatedOp : o));
+    setOperators(updated);
   };
 
   const handleDeleteOperator = async (id: string) => {
-    try {
-      await apiDeleteOperator(id);
-    } catch {
-      // Ignore
-    }
+    await apiDeleteOperator(id);
     const updated = operators.filter((o) => o.id !== id);
     setOperators(updated);
-    localStorage.setItem('manutrack_operators_cache', JSON.stringify(updated));
-    firestoreDeleteOperator(id).catch(() => {});
   };
 
   // Stoppage Types CRUD Handlers
   const handleAddStoppageType = async (data: Omit<StoppageTypeItem, 'id' | 'active'>) => {
-    let savedType: StoppageTypeItem;
-    try {
-      savedType = await apiAddStoppageType(data);
-    } catch {
-      savedType = {
-        id: `st-${Date.now()}`,
-        name: data.name,
-        description: data.description,
-        color: data.color,
-        active: true,
-      };
-    }
+    const savedType = await apiAddStoppageType(data);
     const updated = [...stoppageTypes, savedType];
     setStoppageTypes(updated);
     localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
-    firestoreSaveStoppageType(savedType).catch(() => {});
   };
 
   const handleUpdateStoppageType = async (id: string, data: Partial<StoppageTypeItem>) => {
-    try {
-      const updatedType = await apiUpdateStoppageType(id, data);
-      const updated = stoppageTypes.map((st) => (st.id === id ? updatedType : st));
-      setStoppageTypes(updated);
-      localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
-      firestoreSaveStoppageType(updatedType).catch(() => {});
-    } catch {
-      const updated = stoppageTypes.map((st) => (st.id === id ? { ...st, ...data } : st));
-      setStoppageTypes(updated);
-      localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
-      const target = updated.find((st) => st.id === id);
-      if (target) firestoreSaveStoppageType(target).catch(() => {});
-    }
+    const updatedType = await apiUpdateStoppageType(id, data);
+    const updated = stoppageTypes.map((st) => (st.id === id ? updatedType : st));
+    setStoppageTypes(updated);
+    localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
   };
 
   const handleDeleteStoppageType = async (id: string) => {
-    try {
-      await apiDeleteStoppageType(id);
-    } catch {
-      // Ignore
-    }
+    await apiDeleteStoppageType(id);
     const updated = stoppageTypes.filter((st) => st.id !== id);
     setStoppageTypes(updated);
     localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
-    firestoreDeleteStoppageType(id).catch(() => {});
   };
 
   const handleResetDefaults = async () => {
-    try {
-      await apiResetDefaults();
-    } catch {
-      // Ignore
-    }
-    setOperators(INITIAL_OPERATORS);
+    await apiResetDefaults();
+    setOperators([]);
     setStoppageTypes(INITIAL_STOPPAGE_TYPES);
-    localStorage.setItem('manutrack_operators_cache', JSON.stringify(INITIAL_OPERATORS));
+    localStorage.removeItem('manutrack_operators_cache');
     localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(INITIAL_STOPPAGE_TYPES));
   };
 
@@ -454,7 +291,13 @@ export default function App() {
   };
 
   // Page 2: Machine clicked -> immediately start downtime timer in cloud & go to Page 3
-  const handleSelectMachine = async (machine: Machine, operator: string, shift?: string) => {
+  const handleSelectMachine = async (
+    machine: Machine,
+    operator: string,
+    shift: string | undefined,
+    operatorId: string,
+    pin: string
+  ) => {
     const now = new Date();
     const shiftInfo = shift ? shift : getShiftInfo(now).name;
     const newActive: ActiveDowntime = {
@@ -472,25 +315,20 @@ export default function App() {
       completedStages: [],
     };
 
-    // Reset current operator so next session starts without preselection
+    await apiOperatorLogin(operatorId, pin);
+    await apiStartActiveDowntime(newActive);
     setCurrentOperator('');
-
-    // Update local immediately for zero UI latency
     setActiveDowntimes((prev) => [...prev.filter((d) => d.machineId !== machine.code), newActive]);
+    localStorage.setItem('manutrack_active_downtimes', JSON.stringify([
+      ...activeDowntimes.filter((downtime) => downtime.machineId !== machine.code),
+      newActive,
+    ]));
     setFocusedDowntime(newActive);
     setCurrentPage('timing');
-
-    // Broadcast to Cloud so all other phones see machine Fxx turn into Parada
-    try {
-      firestoreSetActiveDowntime(newActive).catch(() => {});
-      await apiStartActiveDowntime(newActive);
-    } catch (err) {
-      console.warn('Saved locally, background cloud sync pending:', err);
-    }
   };
 
   // Handler for live stage transition (1-Diagnóstico -> 2-Intervenção -> 3-Fecho)
-  const handleTransitionStage = (
+  const handleTransitionStage = async (
     downtime: ActiveDowntime,
     transition: {
       completedStage: StoppageStage;
@@ -509,17 +347,18 @@ export default function App() {
       stageStartTimestamp: Date.now(),
     };
 
-    setActiveDowntimes((prev) =>
-      prev.map((d) => (d.machineId === updated.machineId ? updated : d))
-    );
-    if (focusedDowntime && focusedDowntime.machineId === updated.machineId) {
-      setFocusedDowntime(updated);
+    try {
+      await apiStartActiveDowntime(updated);
+      setActiveDowntimes((prev) =>
+        prev.map((d) => (d.machineId === updated.machineId ? updated : d))
+      );
+      if (focusedDowntime?.machineId === updated.machineId) setFocusedDowntime(updated);
+      setToastMessage(
+        `${updated.machineId}: Concluída etapa "${transition.completedStage.type}" (${transition.completedStage.durationMinutes}m). Iniciado Nível ${transition.nextLevel} (${transition.nextStageName}) com ${transition.nextTechnician}.`
+      );
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Não foi possível atualizar a paragem.');
     }
-    firestoreSetActiveDowntime(updated).catch(() => {});
-    apiStartActiveDowntime(updated).catch(() => {});
-    setToastMessage(
-      `${updated.machineId}: Concluída etapa "${transition.completedStage.type}" (${transition.completedStage.durationMinutes}m). Iniciado Nível ${transition.nextLevel} (${transition.nextStageName}) com ${transition.nextTechnician}.`
-    );
   };
 
   // Open existing active downtime timer
@@ -536,15 +375,12 @@ export default function App() {
   };
 
   // Page 4: "Gravar e sair" clicked -> save record to cloud database & clear machine status
-  const handleSaveAndExit = async (newRecord: StoppageRecord) => {
+  const handleSaveAndExit = async (newRecord: StoppageRecord, operatorId: string, pin: string) => {
     isSavingStoppageRef.current = true;
     cloudStateVersionRef.current += 1;
     try {
+      await apiOperatorLogin(operatorId, pin);
       await apiSaveStoppage(newRecord);
-      await apiCancelActiveDowntime(newRecord.machineId);
-      await firestoreSaveStoppage(newRecord);
-      await firestoreRemoveActiveDowntime(newRecord.machineId);
-
       const updatedRecords = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
       const remainingActive = activeDowntimes.filter(
         (downtime) => downtime.machineId.toUpperCase() !== newRecord.machineId.toUpperCase()
@@ -554,23 +390,15 @@ export default function App() {
       localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updatedRecords));
       localStorage.setItem('manutrack_active_downtimes', JSON.stringify(remainingActive));
       setFocusedDowntime(null);
-      setToastMessage(
-        `Paragem da ${newRecord.machineId} registada com sucesso (${newRecord.durationFormatted})!`
-      );
+      setToastMessage(`Paragem da ${newRecord.machineId} registada com sucesso (${newRecord.durationFormatted})!`);
       setCurrentPage('home');
     } finally {
       isSavingStoppageRef.current = false;
     }
-
-    await syncWithCloud();
   };
 
   // Delete stoppage from cloud and local with PIN authorization
   const handleDeleteRecord = async (id: string, pin?: string) => {
-    // Delete from Firestore
-    firestoreDeleteStoppage(id).catch(() => {});
-
-    // Attempt deletion on cloud backend with credentials
     await apiDeleteStoppage(id, pin);
 
     // If successful, update local state
@@ -588,30 +416,27 @@ export default function App() {
   };
 
   // Handler for manual retrospective stoppage entry
-  const handleSaveManualRecord = async (newRecord: StoppageRecord) => {
-    setRecords((prev) => [newRecord, ...prev]);
+  const handleSaveManualRecord = async (newRecord: StoppageRecord, operatorId: string, pin: string) => {
+    await apiOperatorLogin(operatorId, pin);
+    await apiSaveStoppage(newRecord);
+    const updated = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
+    setRecords(updated);
+    localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updated));
     setToastMessage(`Paragem da ${newRecord.machineId} inserida manualmente com sucesso!`);
     setCurrentPage('history');
-
-    try {
-      // Persist in Firestore
-      firestoreSaveStoppage(newRecord).catch(() => {});
-      await apiSaveStoppage(newRecord);
-      syncWithCloud();
-    } catch (err) {
-      console.warn('Saved locally, background sync pending:', err);
-    }
   };
 
   // Handler to update active downtime details (e.g. assigned technician, stage)
-  const handleUpdateActiveDowntime = (updated: ActiveDowntime) => {
-    setActiveDowntimes((prev) =>
-      prev.map((d) => (d.machineId === updated.machineId ? updated : d))
-    );
-    if (focusedDowntime && focusedDowntime.machineId === updated.machineId) {
-      setFocusedDowntime(updated);
+  const handleUpdateActiveDowntime = async (updated: ActiveDowntime) => {
+    try {
+      await apiStartActiveDowntime(updated);
+      setActiveDowntimes((prev) =>
+        prev.map((d) => (d.machineId === updated.machineId ? updated : d))
+      );
+      if (focusedDowntime?.machineId === updated.machineId) setFocusedDowntime(updated);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Não foi possível atualizar a paragem.');
     }
-    apiStartActiveDowntime(updated).catch(() => {});
   };
 
   // Quick switch focused downtime

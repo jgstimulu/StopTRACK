@@ -39,7 +39,7 @@ import { getShiftInfo } from '../utils/shift';
 interface PageCloseStoppageProps {
   activeDowntime: ActiveDowntime;
   endTimestamp: number;
-  onSaveAndExit: (record: StoppageRecord) => void;
+  onSaveAndExit: (record: StoppageRecord, operatorId: string, pin: string) => Promise<void>;
   onCancel: () => void;
   operators?: string[];
   availableOperators?: Operator[];
@@ -98,11 +98,12 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
   const [initiatedBy, setInitiatedBy] = useState<string>(activeDowntime.initiatedBy || '');
   // closedBy starts strictly empty so the person closing is forced to select themselves.
   const [closedBy, setClosedBy] = useState<string>('');
+  const [closedByOperatorId, setClosedByOperatorId] = useState<string>('');
+  const [closerPin, setCloserPin] = useState('');
 
   const [isCustomInitiator, setIsCustomInitiator] = useState<boolean>(
     Boolean(initiatedBy && !activeOps.some((o) => o.name === initiatedBy))
   );
-  const [isCustomCloser, setIsCustomCloser] = useState<boolean>(false);
 
   const [stoppageType, setStoppageType] = useState<string>(defaultStoppageType);
   const [priority, setPriority] = useState<StoppagePriority>('Média');
@@ -158,6 +159,9 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
     if (!closedBy.trim()) {
       errs.closedBy = 'Selecione quem está a fechar a paragem';
     }
+    if (!closedByOperatorId || !/^\d{4,8}$/.test(closerPin)) {
+      errs.closedBy = 'Selecione um operador autorizado e introduza o seu PIN individual.';
+    }
     if (!shift.trim()) {
       errs.shift = 'Turno é obrigatório';
     }
@@ -198,18 +202,13 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
     return true;
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSaving) return;
 
     if (!validate()) {
       return;
     }
-
-    setIsSaving(true);
-    try {
-      playSuccessChime();
-    } catch {}
 
     const record: StoppageRecord = {
       id: `stop-${Date.now()}-${activeDowntime.machineId}`,
@@ -240,7 +239,17 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
       createdAt: Date.now(),
     };
 
-    onSaveAndExit(record);
+    setIsSaving(true);
+    try {
+      await onSaveAndExit(record, closedByOperatorId, closerPin);
+      playSuccessChime();
+    } catch (error) {
+      setErrors((previous) => ({
+        ...previous,
+        closedBy: error instanceof Error ? error.message : 'Não foi possível guardar a paragem.',
+      }));
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -448,33 +457,16 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
               <User className={`h-3.5 w-3.5 ${errors.closedBy ? 'text-rose-400' : 'text-emerald-400'}`} />
               <span>Quem fechou a paragem <span className="text-rose-400">*</span></span>
             </label>
-            <button
-              type="button"
-              onClick={() => setIsCustomCloser(!isCustomCloser)}
-              className="text-[11px] font-medium text-emerald-400 hover:text-emerald-300"
-            >
-              {isCustomCloser ? 'Selecionar da lista' : 'Digitar outro nome'}
-            </button>
           </div>
 
-          {isCustomCloser ? (
-            <input
-              type="text"
-              value={closedBy}
-              onChange={(e) => {
-                setClosedBy(e.target.value);
-                if (e.target.value.trim() && errors.closedBy) {
-                  setErrors((prev) => ({ ...prev, closedBy: '' }));
-                }
-              }}
-              placeholder="Digite o nome de quem fechou..."
-              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs font-medium text-white placeholder-slate-400 focus:border-emerald-500 focus:outline-none"
-            />
-          ) : (
+          <>
             <select
-              value={closedBy}
+              value={closedByOperatorId}
               onChange={(e) => {
-                setClosedBy(e.target.value);
+                const operator = closerOps.find((entry) => entry.id === e.target.value);
+                setClosedByOperatorId(e.target.value);
+                setClosedBy(operator?.name || '');
+                setCloserPin('');
                 if (e.target.value.trim() && errors.closedBy) {
                   setErrors((prev) => ({ ...prev, closedBy: '' }));
                 }
@@ -485,17 +477,24 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
                 -- Selecione quem está a fechar a paragem (Obrigatório) --
               </option>
               {closerOps.map((op) => (
-                <option key={op.id} value={op.name} className="bg-slate-900 text-white">
+                <option key={op.id} value={op.id} className="bg-slate-900 text-white">
                   {op.name} ({op.role})
                 </option>
               ))}
-              {closerOps.length === 0 && activeOps.map((op) => (
-                <option key={op.id} value={op.name} className="bg-slate-900 text-white">
-                  {op.name}
-                </option>
-              ))}
             </select>
-          )}
+            {closedByOperatorId && (
+              <input
+                type="password"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="off"
+                value={closerPin}
+                onChange={(event) => setCloserPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
+                placeholder="PIN individual (4 a 8 dígitos)"
+                className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs text-white placeholder-slate-400 focus:border-emerald-500 focus:outline-none"
+              />
+            )}
+          </>
 
           {errors.closedBy && (
             <p className="mt-1.5 text-[11px] font-semibold text-rose-400 flex items-center gap-1">

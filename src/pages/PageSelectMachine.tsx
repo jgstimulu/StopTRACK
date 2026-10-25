@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, LogOut, ArrowLeft, Plus, Clock, AlertCircle } from 'lucide-react';
+import { User, LogOut, ArrowLeft, Clock, AlertCircle } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
 import { Machine, ActiveDowntime, Operator } from '../types/manutrack';
 import { MACHINES_DATA } from '../data/initialData';
@@ -7,7 +7,7 @@ import { playIndustrialClick } from '../utils/audio';
 import { getShiftInfo } from '../utils/shift';
 
 interface PageSelectMachineProps {
-  onSelectMachine: (machine: Machine, operator: string, shift: string) => void;
+  onSelectMachine: (machine: Machine, operator: string, shift: string, operatorId: string, pin: string) => Promise<void>;
   onExit: () => void;
   activeDowntimes: ActiveDowntime[];
   onOpenActiveTimer: (downtime: ActiveDowntime) => void;
@@ -27,25 +27,23 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
   availableOperators = [],
   onOpenAdmin,
 }) => {
-  const [customOperators, setCustomOperators] = useState<string[]>([]);
-  const [isAddingOperator, setIsAddingOperator] = useState(false);
-  const [newOperatorName, setNewOperatorName] = useState('');
+  const [selectedOperatorId, setSelectedOperatorId] = useState('');
+  const [operatorPin, setOperatorPin] = useState('');
+  const [isStarting, setIsStarting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   // Automatically calculated industrial shift based on current time:
   // 05:00 - 14:30 -> 1º Turno | 14:30 - 00:00 -> 2º Turno | 00:00 - 05:00 -> Turno Noturno
   const currentShift = getShiftInfo();
 
-  // Only operators authorized to start stoppages + custom additions
+  // Only operators authorized to start stoppages
   const startAuthorized = availableOperators.filter((o) => o.canStart && o.active);
-  const baseNames = startAuthorized.map((o) => o.name);
-  const allAvailableNames = Array.from(new Set([...baseNames, ...customOperators]));
 
   // Map of active downtime by machine code for quick O(1) lookup
   const activeMap = new Map<string, ActiveDowntime>();
   activeDowntimes.forEach((d) => activeMap.set(d.machineId, d));
 
-  const handleMachineClick = (machine: Machine) => {
+  const handleMachineClick = async (machine: Machine) => {
     playIndustrialClick();
     const existing = activeMap.get(machine.code);
     if (existing) {
@@ -57,29 +55,29 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
         setValidationError('Seleção obrigatória: Escolha quem inicia a paragem antes de clicar na máquina.');
         return;
       }
-      setValidationError(null);
-      // Start downtime immediately on this machine with shift recorded
-      onSelectMachine(machine, currentOperator.trim(), currentShift.name);
-    }
-  };
-
-  const handleOperatorChange = (val: string) => {
-    onSetOperator(val);
-    if (val.trim()) {
-      setValidationError(null);
-    }
-  };
-
-  const handleAddOperator = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (newOperatorName.trim()) {
-      const trimmed = newOperatorName.trim();
-      if (!allAvailableNames.includes(trimmed)) {
-        setCustomOperators((prev) => [...prev, trimmed]);
+      const operator = startAuthorized.find((entry) => entry.id === selectedOperatorId);
+      if (!operator || !operatorPin) {
+        setValidationError('Selecione o operador e introduza o seu PIN individual.');
+        return;
       }
-      onSetOperator(trimmed);
-      setNewOperatorName('');
-      setIsAddingOperator(false);
+      setValidationError(null);
+      setIsStarting(true);
+      try {
+        await onSelectMachine(machine, currentOperator.trim(), currentShift.name, operator.id, operatorPin);
+        setOperatorPin('');
+      } catch (error) {
+        setValidationError(error instanceof Error ? error.message : 'Não foi possível iniciar a paragem.');
+      } finally {
+        setIsStarting(false);
+      }
+    }
+  };
+
+  const handleOperatorChange = (operatorId: string) => {
+    setSelectedOperatorId(operatorId);
+    setOperatorPin('');
+    onSetOperator(startAuthorized.find((operator) => operator.id === operatorId)?.name || '');
+    if (operatorId) {
       setValidationError(null);
     }
   };
@@ -128,47 +126,12 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
                 Quem Inicia a Paragem <span className="text-rose-400">*</span>
               </label>
             </div>
-            {!isAddingOperator && (
-              <button
-                type="button"
-                onClick={() => setIsAddingOperator(true)}
-                className="flex items-center gap-1 text-[11px] font-medium text-amber-400 hover:text-amber-300"
-              >
-                <Plus className="h-3 w-3" />
-                <span>Outro nome</span>
-              </button>
-            )}
           </div>
 
-          {isAddingOperator ? (
-            <form onSubmit={handleAddOperator} className="flex gap-2">
-              <input
-                type="text"
-                value={newOperatorName}
-                onChange={(e) => setNewOperatorName(e.target.value)}
-                placeholder="Nome do operador ou técnico..."
-                autoFocus
-                className="flex-1 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-white placeholder-slate-400 focus:border-amber-500 focus:outline-none"
-              />
-              <button
-                type="submit"
-                className="rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400"
-              >
-                Definir
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsAddingOperator(false)}
-                className="rounded-lg border border-slate-600 px-2 py-2 text-xs text-slate-400 hover:text-white"
-              >
-                Cancelar
-              </button>
-            </form>
-          ) : (
-            <div>
+          <div>
               <div className="flex items-center gap-2">
                 <select
-                  value={currentOperator}
+                  value={selectedOperatorId}
                   onChange={(e) => handleOperatorChange(e.target.value)}
                   className={`w-full rounded-lg border px-3 py-2.5 text-xs font-semibold text-white focus:outline-none ${
                     validationError
@@ -179,9 +142,9 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
                   <option value="" className="bg-slate-900 text-slate-400">
                     -- Selecione o Operador que Inicia (Obrigatório) --
                   </option>
-                  {allAvailableNames.map((op) => (
-                    <option key={op} value={op} className="bg-slate-900 text-white">
-                      {op}
+                  {startAuthorized.map((operator) => (
+                    <option key={operator.id} value={operator.id} className="bg-slate-900 text-white">
+                      {operator.name}
                     </option>
                   ))}
                 </select>
@@ -197,6 +160,19 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
                 )}
               </div>
 
+              {selectedOperatorId && (
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete="off"
+                  value={operatorPin}
+                  onChange={(event) => setOperatorPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
+                  placeholder="PIN individual (4 a 8 dígitos)"
+                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs text-white placeholder-slate-400 focus:border-amber-500 focus:outline-none"
+                />
+              )}
+
               {validationError && (
                 <p className="mt-2 text-[11px] font-semibold text-rose-400 flex items-center gap-1.5">
                   <AlertCircle className="h-3.5 w-3.5 shrink-0" />
@@ -204,7 +180,6 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
                 </p>
               )}
             </div>
-          )}
         </div>
 
         {/* Instructions banner */}
@@ -235,6 +210,7 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
                 key={machine.code}
                 type="button"
                 onClick={() => handleMachineClick(machine)}
+                disabled={isStarting}
                 className={`relative flex min-h-[58px] sm:min-h-[64px] flex-col items-center justify-center rounded-xl border-2 p-1.5 transition-all active:scale-[0.95] ${
                   isStopped
                     ? 'border-rose-500 bg-rose-950/60 text-white shadow-md shadow-rose-950/40 ring-1 ring-rose-500'

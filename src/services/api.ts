@@ -11,6 +11,7 @@ export interface SharedPlantState {
 }
 
 const TOKEN_KEY = 'manutrack_admin_token';
+const OPERATOR_TOKEN_KEY = 'manutrack_operator_token';
 
 export function getAdminToken(): string | null {
   if (typeof window === 'undefined') return null;
@@ -29,15 +30,46 @@ export function clearAdminToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
 }
 
+export function getOperatorToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return sessionStorage.getItem(OPERATOR_TOKEN_KEY);
+}
+
+export async function apiOperatorLogin(operatorId: string, pin: string): Promise<void> {
+  const res = await fetch('/api/operators/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ operatorId, pin }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Falha ao autenticar operador.');
+  }
+  const data = await res.json();
+  sessionStorage.setItem(OPERATOR_TOKEN_KEY, data.token);
+}
+
 function getAuthHeaders(): Record<string, string> {
   const token = getAdminToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
   if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+    headers.Authorization = 'Bearer ' + token;
   }
   return headers;
+}
+
+function getOperatorHeaders(): Record<string, string> {
+  const token = getOperatorToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  return headers;
+}
+
+async function responseError(res: Response, fallback: string): Promise<Error> {
+  const data = await res.json().catch(() => ({}));
+  return new Error(data.error || fallback);
 }
 
 export async function apiAdminLogin(
@@ -72,19 +104,20 @@ export async function apiAdminVerify(): Promise<{ authenticated: boolean; user?:
 export async function apiAdminChangeCredentials(
   currentPassword: string,
   newPassword?: string,
-  newEmail?: string,
-  newPin?: string
-): Promise<{ success: boolean; email: string; pin?: string }> {
+  newEmail?: string
+): Promise<{ success: boolean; token: string; email: string }> {
   const res = await fetch('/api/admin/change-credentials', {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify({ currentPassword, newPassword, newEmail, newPin }),
+    body: JSON.stringify({ currentPassword, newPassword, newEmail }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
     throw new Error(errData.error || 'Erro ao alterar credenciais.');
   }
-  return await res.json();
+  const data = await res.json();
+  setAdminToken(data.token);
+  return data;
 }
 
 export async function apiAdminLogout(): Promise<void> {
@@ -107,48 +140,49 @@ export async function fetchSharedState(): Promise<SharedPlantState> {
 export async function apiStartActiveDowntime(downtime: ActiveDowntime): Promise<ActiveDowntime> {
   const res = await fetch('/api/active-stoppages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getOperatorHeaders(),
     body: JSON.stringify(downtime),
   });
-  if (!res.ok) throw new Error('Falha ao registar paragem ativa na nuvem');
+  if (!res.ok) throw await responseError(res, 'Falha ao registar paragem ativa na nuvem.');
   return await res.json();
 }
 
 export async function apiCancelActiveDowntime(machineId: string): Promise<void> {
   const res = await fetch(`/api/active-stoppages/${encodeURIComponent(machineId)}`, {
     method: 'DELETE',
+    headers: getOperatorHeaders(),
   });
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({}));
-    throw new Error(error.error || 'Falha ao cancelar paragem ativa');
-  }
+  if (!res.ok) throw await responseError(res, 'Falha ao cancelar paragem ativa.');
 }
 
 export async function apiSaveStoppage(record: StoppageRecord): Promise<StoppageRecord> {
   const res = await fetch('/api/stoppages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getOperatorHeaders(),
     body: JSON.stringify(record),
   });
-  if (!res.ok) throw new Error('Falha ao guardar paragem na nuvem');
+  if (!res.ok) throw await responseError(res, 'Falha ao guardar paragem na nuvem.');
   return await res.json();
 }
 
 export async function apiDeleteStoppage(id: string, pin?: string): Promise<void> {
   const headers = getAuthHeaders();
+  const operatorToken = getOperatorToken();
+  if (!getAdminToken() && operatorToken) {
+    headers.Authorization = 'Bearer ' + operatorToken;
+  }
   if (pin) {
     headers['x-deletion-pin'] = pin.trim();
   }
 
-  const res = await fetch(`/api/stoppages/${id}`, {
+  const res = await fetch(`/api/stoppages/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers,
     body: pin ? JSON.stringify({ pin: pin.trim() }) : undefined,
   });
 
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || 'PIN de segurança incorreto. Falha ao remover paragem.');
+    throw await responseError(res, 'PIN de segurança incorreto. Falha ao remover paragem.');
   }
 }
 
@@ -157,7 +191,7 @@ export async function apiMigrateLocalRecords(
 ): Promise<{ success: boolean; addedCount: number; total: number }> {
   const res = await fetch('/api/migrate-local', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ localRecords }),
   });
   if (!res.ok) throw new Error('Falha ao migrar dados locais');
@@ -180,11 +214,11 @@ export async function apiBatchImportStoppages(
   return await res.json();
 }
 
-export async function apiAddOperator(data: Omit<Operator, 'id' | 'active'>): Promise<Operator> {
+export async function apiAddOperator(data: Omit<Operator, 'id' | 'active'>, pin: string): Promise<Operator> {
   const res = await fetch('/api/operators', {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, pin }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -193,7 +227,7 @@ export async function apiAddOperator(data: Omit<Operator, 'id' | 'active'>): Pro
   return await res.json();
 }
 
-export async function apiUpdateOperator(id: string, data: Partial<Operator>): Promise<Operator> {
+export async function apiUpdateOperator(id: string, data: Partial<Operator> & { pin?: string }): Promise<Operator> {
   const res = await fetch(`/api/operators/${id}`, {
     method: 'PUT',
     headers: getAuthHeaders(),

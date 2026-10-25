@@ -57,8 +57,8 @@ interface PageAdminProps {
   operators: Operator[];
   stoppageTypes: StoppageTypeItem[];
   stoppageRecords: StoppageRecord[];
-  onAddOperator: (data: Omit<Operator, 'id' | 'active'>) => Promise<void>;
-  onUpdateOperator: (id: string, data: Partial<Operator>) => Promise<void>;
+  onAddOperator: (data: Omit<Operator, 'id' | 'active'>, pin: string) => Promise<void>;
+  onUpdateOperator: (id: string, data: Partial<Operator> & { pin?: string }) => Promise<void>;
   onDeleteOperator: (id: string) => Promise<void>;
   onAddStoppageType: (data: Omit<StoppageTypeItem, 'id' | 'active'>) => Promise<void>;
   onUpdateStoppageType: (id: string, data: Partial<StoppageTypeItem>) => Promise<void>;
@@ -106,6 +106,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   const [opRole, setOpRole] = useState('Operador');
   const [opCanStart, setOpCanStart] = useState(true);
   const [opCanClose, setOpCanClose] = useState(true);
+  const [opPin, setOpPin] = useState('');
 
   // Operator filter: 'all' | 'can_start' | 'can_close'
   const [opFilter, setOpFilter] = useState<'all' | 'can_start' | 'can_close'>('all');
@@ -228,6 +229,10 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   const handleOperatorSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!opName.trim()) return;
+    if ((!editingOpId || opPin) && !/^\d{4,8}$/.test(opPin)) {
+      setFormErrorMsg('O PIN deve conter entre 4 e 8 dígitos.');
+      return;
+    }
 
     setFormErrorMsg(null);
     setIsSubmitting(true);
@@ -238,6 +243,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
           role: opRole.trim(),
           canStart: opCanStart,
           canClose: opCanClose,
+          ...(opPin ? { pin: opPin } : {}),
         });
         showFeedback('Operador atualizado com sucesso!');
       } else {
@@ -246,7 +252,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
           role: opRole.trim(),
           canStart: opCanStart,
           canClose: opCanClose,
-        });
+        }, opPin);
         showFeedback('Novo operador adicionado à lista autorizada!');
       }
       playSuccessChime();
@@ -266,6 +272,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
     setOpRole(op.role);
     setOpCanStart(op.canStart);
     setOpCanClose(op.canClose);
+    setOpPin('');
     setShowOpForm(true);
   };
 
@@ -275,6 +282,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
     setOpRole('Operador');
     setOpCanStart(true);
     setOpCanClose(true);
+    setOpPin('');
     setShowOpForm(false);
     setFormErrorMsg(null);
   };
@@ -596,8 +604,8 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
       return;
     }
 
-    if (newPw && newPw.length < 4) {
-      setCredError('A nova palavra-passe deve conter pelo menos 4 caracteres.');
+    if (newPw && newPw.length < 12) {
+      setCredError('A nova palavra-passe deve conter pelo menos 12 caracteres.');
       return;
     }
 
@@ -741,13 +749,13 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
             <form onSubmit={handleLoginSubmit} className="mt-5 space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-                  Email ou Utilizador
+                  Email do Administrador
                 </label>
                 <input
                   type="text"
                   value={loginEmail}
                   onChange={(e) => setLoginEmail(e.target.value)}
-                  placeholder="Introduza admin"
+                  placeholder="Email configurado pelo administrador"
                   autoComplete="username"
                   required
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500 font-mono"
@@ -1034,6 +1042,24 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                   />
                 </div>
 
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    PIN individual {editingOpId ? '(deixe vazio para manter)' : ''}
+                  </label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    pattern="[0-9]{4,8}"
+                    autoComplete="new-password"
+                    value={opPin}
+                    onChange={(event) => setOpPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
+                    placeholder={editingOpId ? 'Introduza apenas para alterar o PIN' : '4 a 8 dígitos'}
+                    required={!editingOpId}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-500">O PIN é guardado como hash e nunca volta a ser apresentado.</p>
+                </div>
+
                 {/* Permissions checkboxes */}
                 <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 space-y-2">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
@@ -1139,8 +1165,12 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                     type="button"
                     onClick={async () => {
                       playIndustrialClick();
-                      await onDeleteOperator(op.id);
-                      showFeedback(`Operador ${op.name} removido da lista.`);
+                      try {
+                        await onDeleteOperator(op.id);
+                        showFeedback(`Operador ${op.name} removido da lista.`);
+                      } catch (err) {
+                        showFeedback(err instanceof Error ? `Falha: ${err.message}` : 'Falha ao remover operador.');
+                      }
                     }}
                     className="rounded-lg p-2 text-slate-400 hover:bg-rose-950 hover:text-rose-400 transition-colors"
                     title="Remover operador"
@@ -1314,8 +1344,12 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                     type="button"
                     onClick={async () => {
                       playIndustrialClick();
-                      await onDeleteStoppageType(st.id);
-                      showFeedback(`Tipo de avaria "${st.name}" removido.`);
+                      try {
+                        await onDeleteStoppageType(st.id);
+                        showFeedback(`Tipo de avaria "${st.name}" removido.`);
+                      } catch (err) {
+                        showFeedback(err instanceof Error ? `Falha: ${err.message}` : 'Falha ao remover tipo de avaria.');
+                      }
                     }}
                     className="rounded-lg p-2 text-slate-400 hover:bg-rose-950 hover:text-rose-400 transition-colors"
                     title="Remover tipo"
@@ -1978,8 +2012,8 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-3">
-                <div className="min-w-0">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
                   <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
                     Nova Palavra-passe
                   </label>
@@ -1988,7 +2022,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                       type={showNewPw ? 'text' : 'password'}
                       value={newPw}
                       onChange={(e) => setNewPw(e.target.value)}
-                      placeholder="Mínimo 4 caracteres"
+                      placeholder="Mínimo 12 caracteres"
                       className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none font-mono pr-10"
                     />
                     <button
@@ -2002,7 +2036,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                   </div>
                 </div>
 
-                <div className="min-w-0">
+                <div>
                   <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
                     Confirmar Nova Palavra-passe
                   </label>
