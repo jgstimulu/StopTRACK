@@ -313,16 +313,16 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
                 </svg>
 
                 <div className="absolute flex flex-col items-center justify-center text-center">
-                  <span className={`text-3xl font-black font-mono tracking-tight ${rating.color}`}>
+                  <span className={`text-xl font-black font-mono tabular-nums tracking-tighter ${rating.color}`}>
                     {availabilityPercent}%
-                  </span>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Disponibilidade
                   </span>
                 </div>
               </div>
 
-              <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+              <span className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                Disponibilidade
+              </span>
+              <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-400">
                 <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
                 <span>Meta Mundial: &ge; 85%</span>
               </div>
