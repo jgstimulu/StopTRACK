@@ -1760,6 +1760,22 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                 </div>
               </div>
 
+              {parseResult.invalidRows > 0 && (
+                <div
+                  role="status"
+                  className="rounded-xl border border-amber-500/30 bg-amber-950/30 p-3 text-[11px] text-amber-100"
+                >
+                  <strong>{parseResult.invalidRows} linha(s) não serão importadas.</strong>
+                  {parseResult.errors.length > 0 && (
+                    <ul className="mt-1 list-inside list-disc text-amber-200/90">
+                      {parseResult.errors.slice(0, 5).map((error, index) => (
+                        <li key={`${index}-${error}`}>{error}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
               {/* Detected Machines Tag List */}
               <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-2.5 text-[11px] flex items-center justify-between gap-2">
                 <span className="text-slate-400 shrink-0">Máquinas identificadas:</span>

@@ -333,7 +333,7 @@ export async function deleteStoppage(id: string) {
 }
 
 export async function batchImportStoppages(records: Record<string, unknown>[], replaceExisting: boolean) {
-  return request<{
+  const result = await request<{
     importedCount: number;
     duplicatesSkipped: number;
     totalRecords: number;
@@ -341,6 +341,20 @@ export async function batchImportStoppages(records: Record<string, unknown>[], r
     method: 'POST',
     body: JSON.stringify({ p_records: records, p_replace_existing: replaceExisting }),
   });
+
+  if (
+    !result ||
+    !Number.isInteger(result.importedCount) ||
+    result.importedCount < 0 ||
+    !Number.isInteger(result.duplicatesSkipped) ||
+    result.duplicatesSkipped < 0 ||
+    !Number.isInteger(result.totalRecords) ||
+    result.totalRecords < 0
+  ) {
+    throw new SupabaseStoreError(502, 'O Supabase devolveu uma resposta inválida à importação de paragens.');
+  }
+
+  return result;
 }
 
 export async function resetAppData(defaultTypes: Record<string, unknown>[]) {
