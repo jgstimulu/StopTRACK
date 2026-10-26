@@ -776,9 +776,9 @@ app.post('/api/stoppages/batch-import', requireAdminAuth, async (req, res) => {
     const result = await supabaseStore.batchImportStoppages(sanitized, replaceExisting);
     res.json({
       success: true,
-      importedCount: result?.importedCount || 0,
-      duplicatesSkipped: result?.duplicatesSkipped || 0,
-      totalRecords: result?.totalRecords || 0,
+      importedCount: result.importedCount,
+      duplicatesSkipped: result.duplicatesSkipped,
+      totalRecords: result.totalRecords,
     });
   } catch (error) {
     return respondWithStoreError(res, error);
