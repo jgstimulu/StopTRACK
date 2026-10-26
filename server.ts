@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import * as supabaseStore from './server/supabaseStore';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,7 +41,13 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL?.trim().toLowerCase();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 interface DatabaseSchema {
-  admin: { email: string; passwordSalt: string; passwordHash: string; updatedAt: number };
+  admin: {
+    email: string;
+    passwordSalt: string;
+    passwordHash: string;
+    passwordAlgorithm: 'scrypt' | 'pbkdf2-sha512-v1';
+    updatedAt: number;
+  };
   operators: any[];
   stoppageTypes: typeof DEFAULT_STOPPAGE_TYPES;
   activeDowntimes: any[];
@@ -55,13 +62,9 @@ type Session = {
   canClose?: boolean;
   expiresAt: number;
 };
-const sessions = new Map<string, Session>();
 const pinLoginFailures = new Map<string, { count: number; lockedUntil: number }>();
 setInterval(() => {
   const now = Date.now();
-  for (const [token, session] of sessions) {
-    if (session.expiresAt <= now) sessions.delete(token);
-  }
   for (const [ip, failure] of pinLoginFailures) {
     if (failure.lockedUntil <= now && failure.count === 0) pinLoginFailures.delete(ip);
   }
@@ -83,6 +86,18 @@ function verifySecret(secret: string, salt: string, expectedHash: string): boole
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
+function verifyAdminSecret(secret: string, credentials: supabaseStore.AdminCredentials): boolean {
+  if (credentials.passwordAlgorithm !== 'pbkdf2-sha512-v1') {
+    return verifySecret(secret, credentials.passwordSalt, credentials.passwordHash);
+  }
+  if (secret.length > 256 || !/^[a-f0-9]{32}$/i.test(credentials.passwordSalt) ||
+      !/^[a-f0-9]{128}$/i.test(credentials.passwordHash)) return false;
+  const salt = Buffer.from(credentials.passwordSalt, 'hex');
+  const actual = crypto.pbkdf2Sync(secret, salt, 310000, 64, 'sha512');
+  const expected = Buffer.from(credentials.passwordHash, 'hex');
+  return crypto.timingSafeEqual(actual, expected);
+}
+
 function publicOperator(operator: any) {
   const visible = { ...operator };
   for (const field of Object.keys(visible)) {
@@ -97,142 +112,11 @@ function publicOperators(operators: any[]) {
   return operators.map(publicOperator);
 }
 
-type SupabaseOperatorRow = {
-  id: string;
-  name: string;
-  role: string;
-  can_start: boolean;
-  can_close: boolean;
-  active: boolean;
-  pin_salt?: string;
-  pin_hash?: string;
-};
-
-class OperatorStoreRequestError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
-
-async function requestOperatorStore<T>(
-  path: string,
-  init: RequestInit = {}
-): Promise<T | undefined> {
-  const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/+$/, '');
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceRoleKey) {
-    throw new Error('Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on the server.');
-  }
-
-  const headers = new Headers(init.headers);
-  headers.set('apikey', serviceRoleKey);
-  headers.set('Authorization', `Bearer ${serviceRoleKey}`);
-  headers.set('Accept', 'application/json');
-  if (init.body) headers.set('Content-Type', 'application/json');
-
-  const response = await fetch(`${supabaseUrl}/rest/v1${path}`, { ...init, headers });
-  const responseText = await response.text();
-  if (!response.ok) {
-    throw new OperatorStoreRequestError(
-      response.status,
-      `Supabase operator request failed (${response.status}): ${responseText.slice(0, 500)}`
-    );
-  }
-
-  return responseText ? JSON.parse(responseText) as T : undefined;
-}
-
-function operatorFromStore(row: SupabaseOperatorRow): any {
-  if (
-    typeof row.id !== 'string' ||
-    typeof row.name !== 'string' ||
-    typeof row.role !== 'string' ||
-    typeof row.can_start !== 'boolean' ||
-    typeof row.can_close !== 'boolean' ||
-    typeof row.active !== 'boolean'
-  ) {
-    throw new Error('Supabase returned an invalid operator record.');
-  }
-
-  return {
-    id: row.id,
-    name: row.name,
-    role: row.role,
-    canStart: row.can_start,
-    canClose: row.can_close,
-    active: row.active,
-    pinSalt: row.pin_salt,
-    pinHash: row.pin_hash,
-  };
-}
-
-function operatorToStore(operator: Record<string, unknown> & { id: string }): SupabaseOperatorRow {
-  return {
-    id: operator.id,
-    name: String(operator.name),
-    role: String(operator.role),
-    can_start: operator.canStart === true,
-    can_close: operator.canClose === true,
-    active: operator.active === true,
-    pin_salt: typeof operator.pinSalt === 'string' ? operator.pinSalt : undefined,
-    pin_hash: typeof operator.pinHash === 'string' ? operator.pinHash : undefined,
-  };
-}
-
-async function getStoredOperators(): Promise<any[]> {
-  const rows = await requestOperatorStore<SupabaseOperatorRow[]>('/operators?select=*&limit=1000');
-  return (rows || []).map(operatorFromStore);
-}
-
-async function getStoredOperator(id: string): Promise<any | undefined> {
-  const query = new URLSearchParams({ select: '*', id: `eq.${id}`, limit: '1' });
-  const rows = await requestOperatorStore<SupabaseOperatorRow[]>(`/operators?${query}`);
-  return rows?.length ? operatorFromStore(rows[0]) : undefined;
-}
-
-async function createStoredOperator(operator: Record<string, unknown> & { id: string }): Promise<void> {
-  await requestOperatorStore(
-    '/operators',
-    {
-      method: 'POST',
-      headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify(operatorToStore(operator)),
-    }
-  );
-}
-
-async function updateStoredOperator(operator: Record<string, unknown> & { id: string }): Promise<boolean> {
-  const query = new URLSearchParams({ id: `eq.${operator.id}` });
-  const rows = await requestOperatorStore<SupabaseOperatorRow[]>(
-    `/operators?${query}`,
-    {
-      method: 'PATCH',
-      headers: { Prefer: 'return=representation' },
-      body: JSON.stringify(operatorToStore(operator)),
-    }
-  );
-  return Boolean(rows?.length);
-}
-
-async function deleteStoredOperator(id: string): Promise<void> {
-  const query = new URLSearchParams({ id: `eq.${id}` });
-  await requestOperatorStore(`/operators?${query}`, { method: 'DELETE' });
-}
-
-function respondWithOperatorStoreError(res: express.Response, error: unknown) {
-  console.error('Supabase operator persistence error:', error);
+function respondWithStoreError(res: express.Response, error: unknown) {
+  console.error('Supabase persistence error:', error);
   return res.status(503).json({
-    error: 'Não foi possível aceder à base de dados de operadores. Tente novamente.',
+    error: 'Não foi possível aceder à base de dados central. Verifique a ligação ao Supabase e tente novamente.',
   });
-}
-
-async function deleteStoredOperators(): Promise<void> {
-  const operators = await getStoredOperators();
-  for (let index = 0; index < operators.length; index += 50) {
-    await Promise.all(
-      operators.slice(index, index + 50).map((operator) => deleteStoredOperator(operator.id))
-    );
-  }
 }
 
 /**
@@ -276,33 +160,52 @@ function computeShift(dateOrTimestamp?: any, timeStr?: string): string {
   }
 }
 
-function loadDatabase(): DatabaseSchema {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+function loadLegacyDatabase(): DatabaseSchema {
   const parsed = fs.existsSync(DB_FILE)
     ? JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'))
     : {};
   let admin = parsed.admin;
-  let needsSave = !fs.existsSync(DB_FILE);
 
-  if (!admin?.passwordSalt || !admin?.passwordHash) {
+  if (ADMIN_EMAIL || ADMIN_PASSWORD) {
     if (
       !ADMIN_EMAIL ||
+      !ADMIN_PASSWORD ||
       ADMIN_EMAIL.length > 254 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ADMIN_EMAIL) ||
-      !ADMIN_PASSWORD ||
       ADMIN_PASSWORD.length < 12 ||
       ADMIN_PASSWORD.length > 256
     ) {
-      throw new Error('Configure ADMIN_EMAIL e ADMIN_PASSWORD (mínimo 12 caracteres) antes de iniciar o servidor.');
+      throw new Error('Configure ADMIN_EMAIL válido e ADMIN_PASSWORD entre 12 e 256 caracteres nos segredos do servidor.');
     }
     const password = createSecretHash(ADMIN_PASSWORD);
     admin = {
       email: ADMIN_EMAIL,
       passwordSalt: password.salt,
       passwordHash: password.hash,
+      passwordAlgorithm: 'scrypt',
       updatedAt: Date.now(),
     };
-    needsSave = true;
+  } else if (!admin?.passwordSalt || !admin?.passwordHash) {
+    const legacyPassword = typeof admin?.password === 'string' ? admin.password : undefined;
+    const legacyEmail = typeof admin?.email === 'string' ? admin.email : undefined;
+    if (
+      !legacyEmail ||
+      legacyEmail.length > 254 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(legacyEmail) ||
+      !legacyPassword ||
+      legacyPassword.length < 12 ||
+      legacyPassword.length > 256
+    ) {
+      throw new Error('Configure ADMIN_EMAIL e ADMIN_PASSWORD seguros nos segredos do servidor antes do primeiro acesso.');
+    }
+    const password = createSecretHash(legacyPassword);
+    admin = {
+      email: legacyEmail.trim().toLowerCase(),
+      passwordSalt: password.salt,
+      passwordHash: password.hash,
+      passwordAlgorithm: 'scrypt',
+      updatedAt: Date.now(),
+    };
   }
   if (
     typeof admin.email !== 'string' ||
@@ -316,150 +219,229 @@ function loadDatabase(): DatabaseSchema {
     email: admin.email,
     passwordSalt: admin.passwordSalt,
     passwordHash: admin.passwordHash,
+    passwordAlgorithm: admin.passwordAlgorithm === 'pbkdf2-sha512-v1'
+      ? 'pbkdf2-sha512-v1'
+      : 'scrypt',
     updatedAt: Number.isFinite(admin.updatedAt) ? admin.updatedAt : Date.now(),
   };
 
-  const operators = Array.isArray(parsed.operators) ? parsed.operators : [];
-  const db: DatabaseSchema = {
+  return {
     admin,
-    operators,
+    operators: Array.isArray(parsed.operators) ? parsed.operators : [],
     stoppageTypes: Array.isArray(parsed.stoppageTypes) ? parsed.stoppageTypes : DEFAULT_STOPPAGE_TYPES,
     activeDowntimes: Array.isArray(parsed.activeDowntimes) ? parsed.activeDowntimes : [],
     stoppages: Array.isArray(parsed.stoppages) ? parsed.stoppages : [],
     updatedAt: parsed.updatedAt || Date.now(),
   };
-  if (needsSave) saveDatabase(db);
-  return db;
 }
 
-function saveDatabase(db: DatabaseSchema) {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  db.updatedAt = Date.now();
-  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+function validAdminCredentials(value: unknown): value is supabaseStore.AdminCredentials {
+  const credentials = value as Partial<supabaseStore.AdminCredentials> | null;
+  return Boolean(
+    credentials &&
+    typeof credentials.email === 'string' &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(credentials.email) &&
+    typeof credentials.passwordSalt === 'string' &&
+    /^[a-f0-9]{32}$/i.test(credentials.passwordSalt) &&
+    typeof credentials.passwordHash === 'string' &&
+    /^[a-f0-9]{128}$/i.test(credentials.passwordHash) &&
+    (credentials.passwordAlgorithm === undefined ||
+      credentials.passwordAlgorithm === 'scrypt' ||
+      credentials.passwordAlgorithm === 'pbkdf2-sha512-v1') &&
+    Number.isFinite(credentials.updatedAt)
+  );
 }
 
-function createSession(session: Omit<Session, 'expiresAt'>): string {
+async function getOrInitializeAdminCredentials(): Promise<supabaseStore.AdminCredentials> {
+  const stored = await supabaseStore.getAdminCredentials();
+  if (validAdminCredentials(stored)) return stored;
+  const legacy = loadLegacyDatabase().admin;
+  await supabaseStore.saveAdminCredentials(legacy);
+  return legacy;
+}
+
+let storageInitialization: Promise<void> | undefined;
+
+async function initializeSupabaseStorage(): Promise<void> {
+  if (!storageInitialization) {
+    storageInitialization = (async () => {
+      const marker = await supabaseStore.getSetting<{ complete: boolean }>('legacy_import_v1');
+      if (marker?.complete) return;
+
+      const legacy = loadLegacyDatabase();
+      if (!validAdminCredentials(await supabaseStore.getAdminCredentials())) {
+        await supabaseStore.saveAdminCredentials(legacy.admin);
+      }
+
+      const stoppageTypes = await supabaseStore.getStoppageTypes();
+      if (!stoppageTypes.length) {
+        await supabaseStore.importStoppageTypes(legacy.stoppageTypes.length ? legacy.stoppageTypes : DEFAULT_STOPPAGE_TYPES);
+      }
+
+      if (!(await supabaseStore.getStoppages()).length && legacy.stoppages.length) {
+        await supabaseStore.batchImportStoppages(legacy.stoppages, false);
+      }
+      if (!(await supabaseStore.getActiveDowntimes()).length && legacy.activeDowntimes.length) {
+        await supabaseStore.importActiveDowntimesIfAbsent(legacy.activeDowntimes);
+      }
+
+      await supabaseStore.setSetting('legacy_import_v1', {
+        complete: true,
+        completedAt: Date.now(),
+      });
+    })().catch((error) => {
+      storageInitialization = undefined;
+      throw error;
+    });
+  }
+  await storageInitialization;
+}
+
+function tokenHash(token: string) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+async function createSession(session: Omit<Session, 'expiresAt'>): Promise<string> {
   const token = crypto.randomUUID();
-  sessions.set(token, { ...session, expiresAt: Date.now() + SESSION_DURATION_MS });
+  await supabaseStore.createSession(tokenHash(token), {
+    ...session,
+    expiresAt: Date.now() + SESSION_DURATION_MS,
+  });
   return token;
 }
 
-function getSession(req: express.Request): Session | undefined {
+async function getSession(req: express.Request): Promise<Session | undefined> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return undefined;
   const token = header.slice(7);
-  const session = sessions.get(token);
+  const session = await supabaseStore.getSession(tokenHash(token));
   if (!session || session.expiresAt <= Date.now()) {
-    sessions.delete(token);
+    if (session) await supabaseStore.deleteSession(tokenHash(token));
     return undefined;
   }
   return session;
 }
 
 function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (getSession(req)?.role !== 'admin') {
-    return res.status(401).json({ error: 'É necessária uma sessão válida de administrador.' });
-  }
-  next();
+  void getSession(req).then((session) => {
+    if (session?.role !== 'admin') {
+      res.status(401).json({ error: 'É necessária uma sessão válida de administrador.' });
+      return;
+    }
+    next();
+  }).catch((error) => respondWithStoreError(res, error));
 }
 
 function requireOperatorPermission(permission: 'canStart' | 'canClose') {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const session = getSession(req);
-    if (session?.role === 'admin' || (session?.role === 'operator' && session[permission])) {
-      return next();
-    }
-    return res.status(session ? 403 : 401).json({
-      error: session ? 'O operador não tem permissão para esta ação.' : 'Autentique-se com o PIN de um operador autorizado.',
-    });
+    void getSession(req).then((session) => {
+      if (session?.role === 'admin' || (session?.role === 'operator' && session[permission])) {
+        next();
+        return;
+      }
+      res.status(session ? 403 : 401).json({
+        error: session ? 'O operador não tem permissão para esta ação.' : 'Autentique-se com o PIN de um operador autorizado.',
+      });
+    }).catch((error) => respondWithStoreError(res, error));
   };
 }
+
+app.use('/api', (req, res, next) => {
+  void initializeSupabaseStorage().then(() => next()).catch((error) => respondWithStoreError(res, error));
+});
 // REST API ROUTES
 
 // 1. Admin Authentication Routes
-app.post('/api/admin/login', (req, res) => {
+app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (typeof email !== 'string' || email.length > 254 || typeof password !== 'string' || password.length > 256) {
     return res.status(400).json({ error: 'Email e palavra-passe são obrigatórios.' });
   }
 
-  const db = loadDatabase();
-  const normalizedEmail = email.trim().toLowerCase();
-  if (
-    normalizedEmail !== db.admin.email.trim().toLowerCase() ||
-    !verifySecret(password, db.admin.passwordSalt, db.admin.passwordHash)
-  ) {
-    return res.status(401).json({ error: 'Credenciais de administrador incorretas.' });
+  try {
+    const admin = await getOrInitializeAdminCredentials();
+    const normalizedEmail = email.trim().toLowerCase();
+    if (
+      normalizedEmail !== admin.email.trim().toLowerCase() ||
+      !verifyAdminSecret(password, admin)
+    ) {
+      return res.status(401).json({ error: 'Credenciais de administrador incorretas.' });
+    }
+
+    const token = await createSession({ role: 'admin' });
+    res.json({
+      success: true,
+      token,
+      user: { email: admin.email, role: 'Administrador Principal' },
+    });
+  } catch (error) {
+    return respondWithStoreError(res, error);
   }
-
-  const token = createSession({ role: 'admin' });
-
-  res.json({
-    success: true,
-    token,
-    user: {
-      email: db.admin.email,
-      role: 'Administrador Principal',
-    },
-  });
 });
 
-app.get('/api/admin/me', (req, res) => {
-  if (getSession(req)?.role !== 'admin') {
-    return res.json({ authenticated: false });
+app.get('/api/admin/me', async (req, res) => {
+  try {
+    if ((await getSession(req))?.role !== 'admin') {
+      return res.json({ authenticated: false });
+    }
+    const admin = await getOrInitializeAdminCredentials();
+    res.json({
+      authenticated: true,
+      user: { email: admin.email, role: 'Administrador Principal' },
+    });
+  } catch (error) {
+    return respondWithStoreError(res, error);
   }
-  const db = loadDatabase();
-  res.json({
-    authenticated: true,
-    user: {
-      email: db.admin.email,
-      role: 'Administrador Principal',
-    },
-  });
 });
 
-app.post('/api/admin/change-credentials', requireAdminAuth, (req, res) => {
+app.post('/api/admin/change-credentials', requireAdminAuth, async (req, res) => {
   const { currentPassword, newPassword, newEmail } = req.body;
-  const db = loadDatabase();
-
-  if (
-    typeof currentPassword !== 'string' ||
-    !verifySecret(currentPassword, db.admin.passwordSalt, db.admin.passwordHash)
-  ) {
-    return res.status(401).json({ error: 'A palavra-passe atual está incorreta.' });
-  }
-
-  if (newPassword !== undefined) {
-    if (typeof newPassword !== 'string' || newPassword.length < 12 || newPassword.length > 256) {
-      return res.status(400).json({ error: 'A nova palavra-passe deve conter entre 12 e 256 caracteres.' });
+  try {
+    const admin = await getOrInitializeAdminCredentials();
+    if (
+      typeof currentPassword !== 'string' ||
+      !verifyAdminSecret(currentPassword, admin)
+    ) {
+      return res.status(401).json({ error: 'A palavra-passe atual está incorreta.' });
     }
-    const password = createSecretHash(newPassword);
-    db.admin.passwordSalt = password.salt;
-    db.admin.passwordHash = password.hash;
-  }
 
-  if (newEmail !== undefined) {
-    if (typeof newEmail !== 'string' || newEmail.trim().length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail.trim())) {
-      return res.status(400).json({ error: 'Introduza um endereço de email válido.' });
+    if (newPassword !== undefined) {
+      if (typeof newPassword !== 'string' || newPassword.length < 12 || newPassword.length > 256) {
+        return res.status(400).json({ error: 'A nova palavra-passe deve conter entre 12 e 256 caracteres.' });
+      }
+      const password = createSecretHash(newPassword);
+      admin.passwordSalt = password.salt;
+      admin.passwordHash = password.hash;
+      admin.passwordAlgorithm = 'scrypt';
     }
-    db.admin.email = newEmail.trim().toLowerCase();
-  }
 
-  db.admin.updatedAt = Date.now();
-  saveDatabase(db);
-  for (const [token, session] of sessions) {
-    if (session.role === 'admin') sessions.delete(token);
+    if (newEmail !== undefined) {
+      if (typeof newEmail !== 'string' || newEmail.trim().length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail.trim())) {
+        return res.status(400).json({ error: 'Introduza um endereço de email válido.' });
+      }
+      admin.email = newEmail.trim().toLowerCase();
+    }
+
+    admin.updatedAt = Date.now();
+    await supabaseStore.saveAdminCredentials(admin);
+    await supabaseStore.deleteSessionsForRole('admin');
+    const token = await createSession({ role: 'admin' });
+    res.json({ success: true, token, email: admin.email });
+  } catch (error) {
+    return respondWithStoreError(res, error);
   }
-  const token = createSession({ role: 'admin' });
-  res.json({ success: true, token, email: db.admin.email });
 });
 
-app.post('/api/admin/logout', (req, res) => {
+app.post('/api/admin/logout', async (req, res) => {
   const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    sessions.delete(authHeader.slice(7));
+  try {
+    if (authHeader?.startsWith('Bearer ')) {
+      await supabaseStore.deleteSession(tokenHash(authHeader.slice(7)));
+    }
+    res.json({ success: true });
+  } catch (error) {
+    return respondWithStoreError(res, error);
   }
-  res.json({ success: true });
 });
 
 app.post('/api/operators/login', async (req, res) => {
@@ -474,9 +456,9 @@ app.post('/api/operators/login', async (req, res) => {
   }
   let operator;
   try {
-    operator = await getStoredOperator(operatorId);
+    operator = await supabaseStore.getOperator(operatorId);
   } catch (error) {
-    return respondWithOperatorStoreError(res, error);
+    return respondWithStoreError(res, error);
   }
   if (!operator?.active) operator = undefined;
   if (
@@ -492,200 +474,243 @@ app.post('/api/operators/login', async (req, res) => {
     return res.status(401).json({ error: 'PIN incorreto ou operador sem PIN configurado.' });
   }
   pinLoginFailures.delete(clientKey);
-  const token = createSession({
-    role: 'operator',
-    operatorId: operator.id,
-    canStart: Boolean(operator.canStart),
-    canClose: Boolean(operator.canClose),
-  });
-  res.json({ success: true, token, operator: publicOperator(operator) });
-});
-
-app.post('/api/operators/logout', (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) sessions.delete(authHeader.slice(7));
-  res.json({ success: true });
-});
-
-// 2. Get complete centralized shared state (Used by all phones)
-app.get('/api/state', async (_req, res) => {
-  const db = loadDatabase();
   try {
-    const operators = await getStoredOperators();
-    res.json({
-      operators: publicOperators(operators),
-      stoppageTypes: db.stoppageTypes,
-      activeDowntimes: db.activeDowntimes,
-      stoppages: db.stoppages,
-      serverTime: Date.now(),
-      updatedAt: db.updatedAt,
+    const token = await createSession({
+      role: 'operator',
+      operatorId: operator.id,
+      canStart: Boolean(operator.canStart),
+      canClose: Boolean(operator.canClose),
     });
+    res.json({ success: true, token, operator: publicOperator(operator) });
   } catch (error) {
-    return respondWithOperatorStoreError(res, error);
+    return respondWithStoreError(res, error);
   }
 });
 
-// 3. Active Downtimes in Progress (Synchronized across all phones)
-app.get('/api/active-stoppages', (_req, res) => {
-  const db = loadDatabase();
-  res.json(db.activeDowntimes);
+app.post('/api/operators/logout', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  try {
+    if (authHeader?.startsWith('Bearer ')) {
+      await supabaseStore.deleteSession(tokenHash(authHeader.slice(7)));
+    }
+    res.json({ success: true });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
 });
 
-app.post('/api/active-stoppages', (req, res) => {
-  const db = loadDatabase();
-  const downtime = req.body;
+// 2. Complete application state shared by every workstation.
+app.get('/api/state', async (_req, res) => {
+  try {
+    const [operators, stoppageTypes, activeDowntimes, stoppages] = await Promise.all([
+      supabaseStore.getOperators(),
+      supabaseStore.getStoppageTypes(),
+      supabaseStore.getActiveDowntimes(),
+      supabaseStore.getStoppages(),
+    ]);
+    res.json({
+      operators: publicOperators(operators),
+      stoppageTypes,
+      activeDowntimes,
+      stoppages,
+      serverTime: Date.now(),
+      updatedAt: Date.now(),
+    });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+// 3. Active stoppages are keyed by a normalized machine id and updated transactionally.
+app.get('/api/active-stoppages', async (_req, res) => {
+  try {
+    res.json(await supabaseStore.getActiveDowntimes());
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.post('/api/active-stoppages', async (req, res) => {
+  const incoming = req.body;
+  const machineId = typeof incoming?.machineId === 'string'
+    ? incoming.machineId.trim().replace(/\s+/g, '').toUpperCase()
+    : '';
   if (
-    !downtime ||
-    typeof downtime.machineId !== 'string' ||
-    !/^[A-Z0-9_-]{1,64}$/.test(downtime.machineId) ||
-    typeof downtime.id !== 'string' ||
-    !/^[A-Za-z0-9_-]{1,128}$/.test(downtime.id) ||
-    !Number.isFinite(downtime.startTimestamp) ||
-    downtime.startTimestamp <= 0 ||
-    typeof downtime.initiatedBy !== 'string' ||
-    downtime.initiatedBy.length > 128
+    !incoming ||
+    !/^[A-Z0-9_-]{1,64}$/.test(machineId) ||
+    typeof incoming.id !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(incoming.id) ||
+    !Number.isFinite(incoming.startTimestamp) ||
+    incoming.startTimestamp <= 0 ||
+    typeof incoming.initiatedBy !== 'string' ||
+    incoming.initiatedBy.length > 128
   ) {
     return res.status(400).json({ error: 'Dados da paragem ativa inválidos.' });
   }
-  const session = getSession(req);
-  const existing = db.activeDowntimes.some((entry) => entry.machineId === downtime.machineId);
-  if (
-    session?.role !== 'admin' &&
-    !(session?.role === 'operator' && (existing ? session.canClose : session.canStart))
-  ) {
-    return res.status(session ? 403 : 401).json({
-      error: existing ? 'É necessária a permissão para atualizar paragens.' : 'É necessária a permissão para iniciar paragens.',
-    });
-  }
-  if (!existing && session?.role === 'operator') {
-    const operator = db.operators.find((entry) => entry.id === session.operatorId);
-    if (!operator || downtime.initiatedBy !== operator.name) {
-      return res.status(403).json({ error: 'O operador autenticado deve corresponder a quem iniciou a paragem.' });
+
+  try {
+    const session = await getSession(req);
+    const existing = await supabaseStore.getActiveDowntime(machineId);
+    if (
+      session?.role !== 'admin' &&
+      !(session?.role === 'operator' && (existing ? session.canClose : session.canStart))
+    ) {
+      return res.status(session ? 403 : 401).json({
+        error: existing ? 'É necessária a permissão para atualizar paragens.' : 'É necessária a permissão para iniciar paragens.',
+      });
     }
-  }
+    if (!existing && session?.role === 'operator') {
+      const operator = await supabaseStore.getOperator(session.operatorId || '');
+      if (!operator || incoming.initiatedBy !== operator.name) {
+        return res.status(403).json({ error: 'O operador autenticado deve corresponder a quem iniciou a paragem.' });
+      }
+    }
 
-  // Auto-assign shift if not explicitly provided
-  if (!downtime.shift) {
-    downtime.shift = computeShift(downtime.startTimestamp || Date.now());
+    const downtime = {
+      ...incoming,
+      machineId,
+      shift: incoming.shift || computeShift(incoming.startTimestamp),
+    };
+    const result = await supabaseStore.saveActiveDowntime(
+      downtime,
+      session?.role === 'admin' || Boolean(existing),
+      Boolean(existing) && session?.role !== 'admin',
+      typeof existing?.startTimestamp === 'number' ? existing.startTimestamp : undefined
+    );
+    if (!result?.success) {
+      return res.status(409).json({ error: result?.error || 'A paragem ativa foi alterada noutro posto.' });
+    }
+    res.status(201).json(result.data || downtime);
+  } catch (error) {
+    return respondWithStoreError(res, error);
   }
-
-  // Remove existing active downtime on this machine if any
-  db.activeDowntimes = db.activeDowntimes.filter((d) => d.machineId !== downtime.machineId);
-  db.activeDowntimes.push(downtime);
-  saveDatabase(db);
-  res.status(201).json(downtime);
 });
 
-app.delete('/api/active-stoppages/:machineId', requireOperatorPermission('canClose'), (req, res) => {
-  const db = loadDatabase();
-  const { machineId } = req.params;
+app.delete('/api/active-stoppages/:machineId', requireOperatorPermission('canClose'), async (req, res) => {
+  const machineId = req.params.machineId.trim().replace(/\s+/g, '').toUpperCase();
   if (!/^[A-Z0-9_-]{1,64}$/.test(machineId)) {
     return res.status(400).json({ error: 'Identificador de máquina inválido.' });
   }
-  db.activeDowntimes = db.activeDowntimes.filter((d) => d.machineId !== machineId);
-  saveDatabase(db);
-  res.json({ success: true, machineId });
+  try {
+    await supabaseStore.deleteActiveDowntime(machineId);
+    res.json({ success: true, machineId });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
 });
 
-// 4. Stoppages Historical Records
-app.get('/api/stoppages', (_req, res) => {
-  const db = loadDatabase();
-  res.json(db.stoppages);
+// 4. Historical stoppage records.
+app.get('/api/stoppages', async (_req, res) => {
+  try {
+    res.json(await supabaseStore.getStoppages());
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
 });
 
-app.post('/api/stoppages', (req, res) => {
-  const db = loadDatabase();
-  const record = req.body;
+app.post('/api/stoppages', async (req, res) => {
+  const incoming = req.body;
+  const machineId = typeof incoming?.machineId === 'string'
+    ? incoming.machineId.trim().replace(/\s+/g, '').toUpperCase()
+    : '';
   if (
-    !record ||
-    typeof record.id !== 'string' ||
-    record.id.length < 1 ||
-    record.id.length > 128 ||
-    typeof record.machineId !== 'string' ||
-    !/^[A-Z0-9_-]{1,64}$/.test(record.machineId) ||
-    typeof record.closedBy !== 'string' ||
-    record.closedBy.length > 128 ||
-    typeof record.initiatedBy !== 'string' ||
-    record.initiatedBy.length > 128 ||
-    !Number.isFinite(record.startTimestamp) ||
-    !Number.isFinite(record.endTimestamp) ||
-    record.startTimestamp <= 0 ||
-    record.endTimestamp < record.startTimestamp
+    !incoming ||
+    typeof incoming.id !== 'string' ||
+    incoming.id.length < 1 ||
+    incoming.id.length > 128 ||
+    !/^[A-Z0-9_-]{1,64}$/.test(machineId) ||
+    typeof incoming.closedBy !== 'string' ||
+    incoming.closedBy.length > 128 ||
+    typeof incoming.initiatedBy !== 'string' ||
+    incoming.initiatedBy.length > 128 ||
+    typeof incoming.date !== 'string' ||
+    incoming.date.length < 1 ||
+    incoming.date.length > 32 ||
+    typeof incoming.startTime !== 'string' ||
+    incoming.startTime.length < 1 ||
+    incoming.startTime.length > 32 ||
+    !Number.isFinite(incoming.startTimestamp) ||
+    !Number.isFinite(incoming.endTimestamp) ||
+    incoming.startTimestamp <= 0 ||
+    incoming.endTimestamp < incoming.startTimestamp
   ) {
     return res.status(400).json({ error: 'Registo inválido.' });
   }
-  const isClosingActiveDowntime = db.activeDowntimes.some(
-    (downtime) =>
-      downtime.machineId === record.machineId &&
-      downtime.startTimestamp === record.startTimestamp
-  );
-  const session = getSession(req);
-  if (
-    !isClosingActiveDowntime &&
-    session?.role !== 'admin' &&
-    !(session?.role === 'operator' && session.canClose)
-  ) {
-    return res.status(session ? 403 : 401).json({
-      error: 'É necessária uma sessão de operador autorizado para registar uma paragem manual.',
-    });
-  }
 
-  // Ensure shift is stored in the database record
-  if (!record.shift) {
-    record.shift = computeShift(record.startTimestamp, record.startTime);
-  }
+  try {
+    const activeDowntime = await supabaseStore.getActiveDowntime(machineId);
+    const isClosingActiveDowntime = activeDowntime?.startTimestamp === incoming.startTimestamp;
+    const session = await getSession(req);
+    if (
+      !isClosingActiveDowntime &&
+      session?.role !== 'admin' &&
+      !(session?.role === 'operator' && session.canClose)
+    ) {
+      return res.status(session ? 403 : 401).json({
+        error: 'É necessária uma sessão de operador autorizado para registar uma paragem manual.',
+      });
+    }
 
-  // Ensure priority and status default values
-  if (!record.priority) {
-    record.priority = 'Média';
+    const record = {
+      ...incoming,
+      machineId,
+      shift: incoming.shift || computeShift(incoming.startTimestamp, incoming.startTime),
+      priority: incoming.priority || 'Média',
+      status: incoming.status || 'Resolvido',
+    };
+    const result = await supabaseStore.saveStoppage(record, Boolean(isClosingActiveDowntime));
+    if (!result?.success) {
+      return res.status(409).json({
+        error: typeof result?.error === 'string' ? result.error : 'A paragem ativa foi alterada noutro posto.',
+      });
+    }
+    res.status(201).json(result.data || record);
+  } catch (error) {
+    return respondWithStoreError(res, error);
   }
-  if (!record.status) {
-    record.status = 'Resolvido';
-  }
-
-  // Add record to top of history
-  db.stoppages = [record, ...db.stoppages.filter((s) => s.id !== record.id)];
-  // Also clear machine from active downtimes if present
-  if (record.machineId) {
-    db.activeDowntimes = db.activeDowntimes.filter((d) => d.machineId !== record.machineId);
-  }
-  saveDatabase(db);
-  res.status(201).json(record);
 });
 
-app.delete('/api/stoppages/:id', (req, res) => {
-  const db = loadDatabase();
+app.delete('/api/stoppages/:id', async (req, res) => {
   const { id } = req.params;
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
-    return res.status(400).json({ error: 'Identificador inv�lido.' });
+    return res.status(400).json({ error: 'Identificador inválido.' });
   }
 
-  const session = getSession(req);
   const pinHeader = req.headers['x-deletion-pin'];
   const pinBody = req.body?.pin;
   const providedPin = (pinHeader || pinBody || '').toString().trim();
-  const operatorPinValid = PIN_PATTERN.test(providedPin) && db.operators.some((operator) =>
-    operator.active &&
-    operator.canClose &&
-    operator.pinSalt &&
-    operator.pinHash &&
-    verifySecret(providedPin, operator.pinSalt, operator.pinHash)
-  );
-  const isAuthorized = session?.role === 'admin' ||
-    (session?.role === 'operator' && session.canClose) ||
-    operatorPinValid;
-  if (!isAuthorized) {
-    return res.status(401).json({ error: 'PIN de operador autorizado incorreto.' });
-  }
+  try {
+    const [session, operators] = await Promise.all([
+      getSession(req),
+      supabaseStore.getOperators(),
+    ]);
+    const operatorPinValid = PIN_PATTERN.test(providedPin) && operators.some((operator) =>
+      operator.active &&
+      operator.canClose &&
+      operator.pinSalt &&
+      operator.pinHash &&
+      verifySecret(providedPin, operator.pinSalt, operator.pinHash)
+    );
+    const isAuthorized = session?.role === 'admin' ||
+      (session?.role === 'operator' && session.canClose) ||
+      operatorPinValid;
+    if (!isAuthorized) {
+      return res.status(401).json({ error: 'PIN de operador autorizado incorreto.' });
+    }
 
-  const initialCount = db.stoppages.length;
-  db.stoppages = db.stoppages.filter((record) => record.id !== id);
-  saveDatabase(db);
-  res.json({ success: true, id, deletedCount: initialCount - db.stoppages.length });
+    const deletedCount = await supabaseStore.deleteStoppage(id);
+    res.json({
+      success: true,
+      id,
+      deletedCount,
+    });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
 });
-// 5. Migration & CSV Batch Import (Protected by requireAdminAuth)
-app.post('/api/migrate-local', requireAdminAuth, (req, res) => {
-  const db = loadDatabase();
+
+// 5. Device migration and CSV imports write directly to the shared database.
+app.post('/api/migrate-local', requireAdminAuth, async (req, res) => {
   const { localRecords } = req.body || {};
   if (
     !Array.isArray(localRecords) ||
@@ -696,40 +721,32 @@ app.post('/api/migrate-local', requireAdminAuth, (req, res) => {
       record.id.length < 1 ||
       record.id.length > 128 ||
       typeof record.machineId !== 'string' ||
-      !/^[A-Z0-9_-]{1,64}$/.test(record.machineId) ||
+      !/^[A-Z0-9_-]{1,64}$/i.test(record.machineId.trim().replace(/\s+/g, '')) ||
       !Number.isFinite(record.startTimestamp)
     )
   ) {
     return res.status(400).json({ error: 'localRecords deve conter no máximo 10 000 registos válidos.' });
   }
-
-  const existingIds = new Set(db.stoppages.map((s) => s.id));
-  let addedCount = 0;
-
-  localRecords.forEach((rec) => {
-    if (rec && rec.id && !existingIds.has(rec.id)) {
-      if (!rec.shift) {
-        rec.shift = computeShift(rec.startTimestamp, rec.startTime);
-      }
-      if (!rec.priority) {
-        rec.priority = 'Média';
-      }
-      if (!rec.status) {
-        rec.status = 'Resolvido';
-      }
-      db.stoppages.push(rec);
-      existingIds.add(rec.id);
-      addedCount++;
-    }
-  });
-
-  db.stoppages.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  saveDatabase(db);
-  res.json({ success: true, addedCount, total: db.stoppages.length });
+  try {
+    const sanitized = localRecords.map((record) => ({
+      ...record,
+      machineId: record.machineId.trim().replace(/\s+/g, '').toUpperCase(),
+      shift: record.shift || computeShift(record.startTimestamp, record.startTime),
+      priority: record.priority || 'Média',
+      status: record.status || 'Resolvido',
+    }));
+    const result = await supabaseStore.batchImportStoppages(sanitized, false);
+    res.json({
+      success: true,
+      addedCount: result?.importedCount || 0,
+      total: result?.totalRecords || 0,
+    });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
 });
 
-app.post('/api/stoppages/batch-import', requireAdminAuth, (req, res) => {
-  const db = loadDatabase();
+app.post('/api/stoppages/batch-import', requireAdminAuth, async (req, res) => {
   const { records, replaceExisting = false } = req.body || {};
   if (
     !Array.isArray(records) ||
@@ -741,74 +758,39 @@ app.post('/api/stoppages/batch-import', requireAdminAuth, (req, res) => {
       record.id.length < 1 ||
       record.id.length > 128 ||
       typeof record.machineId !== 'string' ||
-      !/^[A-Z0-9_-]{1,64}$/.test(record.machineId) ||
+      !/^[A-Z0-9_-]{1,64}$/i.test(record.machineId.trim().replace(/\s+/g, '')) ||
       !Number.isFinite(record.startTimestamp)
     )
   ) {
     return res.status(400).json({ error: 'records deve conter no máximo 10 000 registos válidos.' });
   }
 
-  // Ensure all imported records have shift, priority, and status calculated if missing
-  const sanitized = records.map((rec) => {
-    const updated = { ...rec };
-    if (!updated.shift) {
-      updated.shift = computeShift(updated.startTimestamp, updated.startTime);
-    }
-    if (!updated.priority) {
-      updated.priority = 'Média';
-    }
-    if (!updated.status) {
-      updated.status = 'Resolvido';
-    }
-    return updated;
-  });
-
-  if (replaceExisting) {
-    db.stoppages = sanitized;
-    saveDatabase(db);
-    return res.json({
+  const sanitized = records.map((record) => ({
+    ...record,
+    machineId: record.machineId.trim().replace(/\s+/g, '').toUpperCase(),
+    shift: record.shift || computeShift(record.startTimestamp, record.startTime),
+    priority: record.priority || 'Média',
+    status: record.status || 'Resolvido',
+  }));
+  try {
+    const result = await supabaseStore.batchImportStoppages(sanitized, replaceExisting);
+    res.json({
       success: true,
-      importedCount: sanitized.length,
-      duplicatesSkipped: 0,
-      totalRecords: db.stoppages.length,
+      importedCount: result?.importedCount || 0,
+      duplicatesSkipped: result?.duplicatesSkipped || 0,
+      totalRecords: result?.totalRecords || 0,
     });
+  } catch (error) {
+    return respondWithStoreError(res, error);
   }
-
-  const existingKeys = new Set(
-    db.stoppages.map((s) => `${s.machineId}_${s.date}_${s.startTime}`)
-  );
-
-  let importedCount = 0;
-  let duplicatesSkipped = 0;
-
-  sanitized.forEach((rec) => {
-    const key = `${rec.machineId}_${rec.date}_${rec.startTime}`;
-    if (!existingKeys.has(key)) {
-      db.stoppages.push(rec);
-      existingKeys.add(key);
-      importedCount++;
-    } else {
-      duplicatesSkipped++;
-    }
-  });
-
-  db.stoppages.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  saveDatabase(db);
-
-  res.json({
-    success: true,
-    importedCount,
-    duplicatesSkipped,
-    totalRecords: db.stoppages.length,
-  });
 });
 
 // 6. Operators Management (Protected by requireAdminAuth)
 app.get('/api/operators', async (_req, res) => {
   try {
-    res.json(publicOperators(await getStoredOperators()));
+    res.json(publicOperators(await supabaseStore.getOperators()));
   } catch (error) {
-    return respondWithOperatorStoreError(res, error);
+    return respondWithStoreError(res, error);
   }
 });
 
@@ -826,7 +808,7 @@ app.post('/api/operators', requireAdminAuth, async (req, res) => {
     return res.status(400).json({ error: 'Nome, PIN de 4 a 8 dígitos e permissões válidas são obrigatórios.' });
   }
   try {
-    const operators = await getStoredOperators();
+    const operators = await supabaseStore.getOperators();
     if (operators.some((operator) =>
       operator.pinSalt &&
       operator.pinHash &&
@@ -853,10 +835,10 @@ app.post('/api/operators', requireAdminAuth, async (req, res) => {
       pinHash: pinCredential.hash,
     };
 
-    await createStoredOperator(newOp);
+    await supabaseStore.createOperator(newOp);
     res.status(201).json(publicOperator(newOp));
   } catch (error) {
-    return respondWithOperatorStoreError(res, error);
+    return respondWithStoreError(res, error);
   }
 });
 
@@ -868,11 +850,11 @@ app.put('/api/operators/:id', requireAdminAuth, async (req, res) => {
   const { name, role, canStart, canClose, active, pin } = req.body || {};
 
   try {
-    const operator = await getStoredOperator(id);
+    const operator = await supabaseStore.getOperator(id);
     if (!operator) {
       return res.status(404).json({ error: 'Operador não encontrado.' });
     }
-    const operators = await getStoredOperators();
+    const operators = await supabaseStore.getOperators();
     const updatedOperator = { ...operator };
 
     if (name !== undefined) {
@@ -923,15 +905,13 @@ app.put('/api/operators/:id', requireAdminAuth, async (req, res) => {
       updatedOperator.pinHash = pinCredential.hash;
     }
 
-    if (!(await updateStoredOperator({ ...updatedOperator, id }))) {
+    if (!(await supabaseStore.updateOperator({ ...updatedOperator, id }))) {
       return res.status(404).json({ error: 'Operador não encontrado.' });
     }
-    for (const [token, session] of sessions) {
-      if (session.operatorId === id) sessions.delete(token);
-    }
+    await supabaseStore.deleteSessionsForOperator(id);
     res.json(publicOperator(updatedOperator));
   } catch (error) {
-    return respondWithOperatorStoreError(res, error);
+    return respondWithStoreError(res, error);
   }
 });
 
@@ -941,24 +921,24 @@ app.delete('/api/operators/:id', requireAdminAuth, async (req, res) => {
     return res.status(400).json({ error: 'Identificador de operador inválido.' });
   }
   try {
-    await deleteStoredOperator(id);
+    await supabaseStore.deleteOperator(id);
+    await supabaseStore.deleteSessionsForOperator(id);
   } catch (error) {
-    return respondWithOperatorStoreError(res, error);
-  }
-  for (const [token, session] of sessions) {
-    if (session.operatorId === id) sessions.delete(token);
+    return respondWithStoreError(res, error);
   }
   res.json({ success: true, id });
 });
 
 // 7. Stoppage Types Management (Protected by requireAdminAuth)
-app.get('/api/stoppage-types', (_req, res) => {
-  const db = loadDatabase();
-  res.json(db.stoppageTypes);
+app.get('/api/stoppage-types', async (_req, res) => {
+  try {
+    res.json(await supabaseStore.getStoppageTypes());
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
 });
 
-app.post('/api/stoppage-types', requireAdminAuth, (req, res) => {
-  const db = loadDatabase();
+app.post('/api/stoppage-types', requireAdminAuth, async (req, res) => {
   const { name, description, color } = req.body || {};
   if (typeof name !== 'string' || !name.trim() || name.trim().length > 128) {
     return res.status(400).json({ error: 'Nome do tipo de avaria é obrigatório.' });
@@ -972,87 +952,80 @@ app.post('/api/stoppage-types', requireAdminAuth, (req, res) => {
     active: true,
   };
 
-  db.stoppageTypes.push(newType);
-  saveDatabase(db);
-  res.status(201).json(newType);
+  try {
+    await supabaseStore.createStoppageType(newType);
+    res.status(201).json(newType);
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
 });
 
-app.put('/api/stoppage-types/:id', requireAdminAuth, (req, res) => {
-  const db = loadDatabase();
+app.put('/api/stoppage-types/:id', requireAdminAuth, async (req, res) => {
   const { id } = req.params;
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
     return res.status(400).json({ error: 'Identificador de tipo inválido.' });
   }
   const { name, description, color, active } = req.body || {};
 
-  const idx = db.stoppageTypes.findIndex((st) => st.id === id);
-  if (idx === -1) {
-    return res.status(404).json({ error: 'Tipo de avaria não encontrado.' });
-  }
+  const changes: Record<string, unknown> = {};
 
   if (name !== undefined) {
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 128) {
       return res.status(400).json({ error: 'Nome do tipo de avaria inválido.' });
     }
-    db.stoppageTypes[idx].name = name.trim();
+    changes.name = name.trim();
   }
   if (description !== undefined) {
     if (typeof description !== 'string' || description.length > 500) {
       return res.status(400).json({ error: 'Descrição do tipo de avaria inválida.' });
     }
-    db.stoppageTypes[idx].description = description.trim();
+    changes.description = description.trim();
   }
   if (color !== undefined) {
     if (typeof color !== 'string' || !/^[a-z-]{1,32}$/.test(color)) {
       return res.status(400).json({ error: 'Cor do tipo de avaria inválida.' });
     }
-    db.stoppageTypes[idx].color = color;
+    changes.color = color;
   }
   if (active !== undefined) {
     if (typeof active !== 'boolean') return res.status(400).json({ error: 'Estado inválido.' });
-    db.stoppageTypes[idx].active = active;
+    changes.active = active;
   }
 
-  saveDatabase(db);
-  res.json(db.stoppageTypes[idx]);
+  try {
+    const updated = await supabaseStore.updateStoppageType(id, changes);
+    if (!updated) return res.status(404).json({ error: 'Tipo de avaria não encontrado.' });
+    res.json(updated);
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
 });
 
-app.delete('/api/stoppage-types/:id', requireAdminAuth, (req, res) => {
-  const db = loadDatabase();
+app.delete('/api/stoppage-types/:id', requireAdminAuth, async (req, res) => {
   const { id } = req.params;
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
     return res.status(400).json({ error: 'Identificador de tipo inválido.' });
   }
-  db.stoppageTypes = db.stoppageTypes.filter((st) => st.id !== id);
-  saveDatabase(db);
-  res.json({ success: true, id });
+  try {
+    await supabaseStore.deleteStoppageType(id);
+    res.json({ success: true, id });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
 });
 
 // 8. Reset to defaults (Protected by requireAdminAuth)
 app.post('/api/reset-defaults', requireAdminAuth, async (_req, res) => {
   try {
-    await deleteStoredOperators();
+    await supabaseStore.resetAppData(DEFAULT_STOPPAGE_TYPES);
+    res.json({ success: true });
   } catch (error) {
-    return respondWithOperatorStoreError(res, error);
+    return respondWithStoreError(res, error);
   }
-  const db = loadDatabase();
-  db.operators = DEFAULT_OPERATORS;
-  db.stoppageTypes = DEFAULT_STOPPAGE_TYPES;
-  db.activeDowntimes = [];
-  db.stoppages = DEFAULT_STOPPAGES_SEED;
-  db.updatedAt = Date.now();
-  saveDatabase(db);
-  for (const [token, session] of sessions) {
-    if (session.role === 'operator') sessions.delete(token);
-  }
-  res.json({ success: true });
 });
 
 // Development vs Production setup
 async function startServer() {
-  loadDatabase();
-  await getStoredOperators();
-
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

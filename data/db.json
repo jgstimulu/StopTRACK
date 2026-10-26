@@ -1,9 +1,4 @@
 {
-  "admin": {
-    "email": "jricardosbd@gmail.com",
-    "password": "admin2026",
-    "updatedAt": 1792525000000
-  },
   "operators": [],
   "stoppageTypes": [
     {
