@@ -97,6 +97,144 @@ function publicOperators(operators: any[]) {
   return operators.map(publicOperator);
 }
 
+type SupabaseOperatorRow = {
+  id: string;
+  name: string;
+  role: string;
+  can_start: boolean;
+  can_close: boolean;
+  active: boolean;
+  pin_salt?: string;
+  pin_hash?: string;
+};
+
+class OperatorStoreRequestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+async function requestOperatorStore<T>(
+  path: string,
+  init: RequestInit = {}
+): Promise<T | undefined> {
+  const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/+$/, '');
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error('Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on the server.');
+  }
+
+  const headers = new Headers(init.headers);
+  headers.set('apikey', serviceRoleKey);
+  headers.set('Authorization', `Bearer ${serviceRoleKey}`);
+  headers.set('Accept', 'application/json');
+  if (init.body) headers.set('Content-Type', 'application/json');
+
+  const response = await fetch(`${supabaseUrl}/rest/v1${path}`, { ...init, headers });
+  const responseText = await response.text();
+  if (!response.ok) {
+    throw new OperatorStoreRequestError(
+      response.status,
+      `Supabase operator request failed (${response.status}): ${responseText.slice(0, 500)}`
+    );
+  }
+
+  return responseText ? JSON.parse(responseText) as T : undefined;
+}
+
+function operatorFromStore(row: SupabaseOperatorRow): any {
+  if (
+    typeof row.id !== 'string' ||
+    typeof row.name !== 'string' ||
+    typeof row.role !== 'string' ||
+    typeof row.can_start !== 'boolean' ||
+    typeof row.can_close !== 'boolean' ||
+    typeof row.active !== 'boolean'
+  ) {
+    throw new Error('Supabase returned an invalid operator record.');
+  }
+
+  return {
+    id: row.id,
+    name: row.name,
+    role: row.role,
+    canStart: row.can_start,
+    canClose: row.can_close,
+    active: row.active,
+    pinSalt: row.pin_salt,
+    pinHash: row.pin_hash,
+  };
+}
+
+function operatorToStore(operator: Record<string, unknown> & { id: string }): SupabaseOperatorRow {
+  return {
+    id: operator.id,
+    name: String(operator.name),
+    role: String(operator.role),
+    can_start: operator.canStart === true,
+    can_close: operator.canClose === true,
+    active: operator.active === true,
+    pin_salt: typeof operator.pinSalt === 'string' ? operator.pinSalt : undefined,
+    pin_hash: typeof operator.pinHash === 'string' ? operator.pinHash : undefined,
+  };
+}
+
+async function getStoredOperators(): Promise<any[]> {
+  const rows = await requestOperatorStore<SupabaseOperatorRow[]>('/operators?select=*&limit=1000');
+  return (rows || []).map(operatorFromStore);
+}
+
+async function getStoredOperator(id: string): Promise<any | undefined> {
+  const query = new URLSearchParams({ select: '*', id: `eq.${id}`, limit: '1' });
+  const rows = await requestOperatorStore<SupabaseOperatorRow[]>(`/operators?${query}`);
+  return rows?.length ? operatorFromStore(rows[0]) : undefined;
+}
+
+async function createStoredOperator(operator: Record<string, unknown> & { id: string }): Promise<void> {
+  await requestOperatorStore(
+    '/operators',
+    {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify(operatorToStore(operator)),
+    }
+  );
+}
+
+async function updateStoredOperator(operator: Record<string, unknown> & { id: string }): Promise<boolean> {
+  const query = new URLSearchParams({ id: `eq.${operator.id}` });
+  const rows = await requestOperatorStore<SupabaseOperatorRow[]>(
+    `/operators?${query}`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify(operatorToStore(operator)),
+    }
+  );
+  return Boolean(rows?.length);
+}
+
+async function deleteStoredOperator(id: string): Promise<void> {
+  const query = new URLSearchParams({ id: `eq.${id}` });
+  await requestOperatorStore(`/operators?${query}`, { method: 'DELETE' });
+}
+
+function respondWithOperatorStoreError(res: express.Response, error: unknown) {
+  console.error('Supabase operator persistence error:', error);
+  return res.status(503).json({
+    error: 'Não foi possível aceder à base de dados de operadores. Tente novamente.',
+  });
+}
+
+async function deleteStoredOperators(): Promise<void> {
+  const operators = await getStoredOperators();
+  for (let index = 0; index < operators.length; index += 50) {
+    await Promise.all(
+      operators.slice(index, index + 50).map((operator) => deleteStoredOperator(operator.id))
+    );
+  }
+}
+
 /**
  * Calcula o turno industrial com base nas regras:
  * 05:00 às 14:30 -> 1º Turno
@@ -324,7 +462,7 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/operators/login', (req, res) => {
+app.post('/api/operators/login', async (req, res) => {
   const clientKey = req.ip || 'unknown';
   const failure = pinLoginFailures.get(clientKey);
   if (failure && failure.lockedUntil > Date.now()) {
@@ -334,8 +472,13 @@ app.post('/api/operators/login', (req, res) => {
   if (typeof operatorId !== 'string' || typeof pin !== 'string' || !PIN_PATTERN.test(pin)) {
     return res.status(400).json({ error: 'Selecione o operador e introduza um PIN válido.' });
   }
-  const db = loadDatabase();
-  const operator = db.operators.find((entry) => entry.id === operatorId && entry.active);
+  let operator;
+  try {
+    operator = await getStoredOperator(operatorId);
+  } catch (error) {
+    return respondWithOperatorStoreError(res, error);
+  }
+  if (!operator?.active) operator = undefined;
   if (
     !operator?.pinSalt ||
     !operator?.pinHash ||
@@ -365,16 +508,21 @@ app.post('/api/operators/logout', (req, res) => {
 });
 
 // 2. Get complete centralized shared state (Used by all phones)
-app.get('/api/state', (_req, res) => {
+app.get('/api/state', async (_req, res) => {
   const db = loadDatabase();
-  res.json({
-    operators: publicOperators(db.operators),
-    stoppageTypes: db.stoppageTypes,
-    activeDowntimes: db.activeDowntimes,
-    stoppages: db.stoppages,
-    serverTime: Date.now(),
-    updatedAt: db.updatedAt,
-  });
+  try {
+    const operators = await getStoredOperators();
+    res.json({
+      operators: publicOperators(operators),
+      stoppageTypes: db.stoppageTypes,
+      activeDowntimes: db.activeDowntimes,
+      stoppages: db.stoppages,
+      serverTime: Date.now(),
+      updatedAt: db.updatedAt,
+    });
+  } catch (error) {
+    return respondWithOperatorStoreError(res, error);
+  }
 });
 
 // 3. Active Downtimes in Progress (Synchronized across all phones)
@@ -656,13 +804,15 @@ app.post('/api/stoppages/batch-import', requireAdminAuth, (req, res) => {
 });
 
 // 6. Operators Management (Protected by requireAdminAuth)
-app.get('/api/operators', (_req, res) => {
-  const db = loadDatabase();
-  res.json(publicOperators(db.operators));
+app.get('/api/operators', async (_req, res) => {
+  try {
+    res.json(publicOperators(await getStoredOperators()));
+  } catch (error) {
+    return respondWithOperatorStoreError(res, error);
+  }
 });
 
-app.post('/api/operators', requireAdminAuth, (req, res) => {
-  const db = loadDatabase();
+app.post('/api/operators', requireAdminAuth, async (req, res) => {
   const { name, role, canStart, canClose, pin } = req.body || {};
   if (
     typeof name !== 'string' ||
@@ -675,109 +825,126 @@ app.post('/api/operators', requireAdminAuth, (req, res) => {
   ) {
     return res.status(400).json({ error: 'Nome, PIN de 4 a 8 dígitos e permissões válidas são obrigatórios.' });
   }
-  if (db.operators.some((operator) => operator.pinSalt && operator.pinHash && verifySecret(pin, operator.pinSalt, operator.pinHash))) {
-    return res.status(409).json({ error: 'Este PIN já está atribuído a outro operador.' });
-  }
-  if (db.operators.some((operator) =>
-    typeof operator.name === 'string' &&
-    operator.name.trim().toLowerCase() === name.trim().toLowerCase()
-  )) {
-    return res.status(409).json({ error: 'Já existe um operador com esse nome.' });
-  }
-
-  const pinCredential = createSecretHash(pin);
-  const newOp = {
-    id: `op-${crypto.randomUUID()}`,
-    name: name.trim(),
-    role: typeof role === 'string' && role.trim() ? role.trim().slice(0, 128) : 'Operador',
-    canStart,
-    canClose,
-    active: true,
-    pinSalt: pinCredential.salt,
-    pinHash: pinCredential.hash,
-  };
-
-  db.operators.push(newOp);
-  saveDatabase(db);
-  res.status(201).json(publicOperator(newOp));
-});
-
-app.put('/api/operators/:id', requireAdminAuth, (req, res) => {
-  const db = loadDatabase();
-  const { id } = req.params;
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
-    return res.status(400).json({ error: 'Identificador de operador inválido.' });
-  }
-  const { name, role, canStart, canClose, active, pin } = req.body || {};
-
-  const idx = db.operators.findIndex((o) => o.id === id);
-  if (idx === -1) {
-    return res.status(404).json({ error: 'Operador não encontrado.' });
-  }
-
-  if (name !== undefined) {
-    if (typeof name !== 'string' || !name.trim() || name.trim().length > 128) {
-      return res.status(400).json({ error: 'Nome de operador inválido.' });
-    }
-    if (db.operators.some((operator) =>
-      operator.id !== id &&
-      typeof operator.name === 'string' &&
-      operator.name.trim().toLowerCase() === name.trim().toLowerCase()
-    )) {
-      return res.status(409).json({ error: 'Já existe um operador com esse nome.' });
-    }
-    db.operators[idx].name = name.trim();
-  }
-  if (role !== undefined) {
-    if (typeof role !== 'string' || role.trim().length > 128) {
-      return res.status(400).json({ error: 'Função de operador inválida.' });
-    }
-    db.operators[idx].role = role.trim() || 'Operador';
-  }
-  if (canStart !== undefined) {
-    if (typeof canStart !== 'boolean') return res.status(400).json({ error: 'Permissão inválida.' });
-    db.operators[idx].canStart = canStart;
-  }
-  if (canClose !== undefined) {
-    if (typeof canClose !== 'boolean') return res.status(400).json({ error: 'Permissão inválida.' });
-    db.operators[idx].canClose = canClose;
-  }
-  if (active !== undefined) {
-    if (typeof active !== 'boolean') return res.status(400).json({ error: 'Estado inválido.' });
-    db.operators[idx].active = active;
-  }
-  if (pin !== undefined) {
-    if (typeof pin !== 'string' || !PIN_PATTERN.test(pin)) {
-      return res.status(400).json({ error: 'O PIN deve conter entre 4 e 8 dígitos.' });
-    }
-    if (db.operators.some((operator) =>
-      operator.id !== id &&
+  try {
+    const operators = await getStoredOperators();
+    if (operators.some((operator) =>
       operator.pinSalt &&
       operator.pinHash &&
       verifySecret(pin, operator.pinSalt, operator.pinHash)
     )) {
       return res.status(409).json({ error: 'Este PIN já está atribuído a outro operador.' });
     }
-    const pinCredential = createSecretHash(pin);
-    db.operators[idx].pinSalt = pinCredential.salt;
-    db.operators[idx].pinHash = pinCredential.hash;
-  }
+    if (operators.some((operator) =>
+      typeof operator.name === 'string' &&
+      operator.name.trim().toLowerCase() === name.trim().toLowerCase()
+    )) {
+      return res.status(409).json({ error: 'Já existe um operador com esse nome.' });
+    }
 
-  saveDatabase(db);
-  for (const [token, session] of sessions) {
-    if (session.operatorId === id) sessions.delete(token);
+    const pinCredential = createSecretHash(pin);
+    const newOp = {
+      id: `op-${crypto.randomUUID()}`,
+      name: name.trim(),
+      role: typeof role === 'string' && role.trim() ? role.trim().slice(0, 128) : 'Operador',
+      canStart,
+      canClose,
+      active: true,
+      pinSalt: pinCredential.salt,
+      pinHash: pinCredential.hash,
+    };
+
+    await createStoredOperator(newOp);
+    res.status(201).json(publicOperator(newOp));
+  } catch (error) {
+    return respondWithOperatorStoreError(res, error);
   }
-  res.json(publicOperator(db.operators[idx]));
 });
 
-app.delete('/api/operators/:id', requireAdminAuth, (req, res) => {
-  const db = loadDatabase();
+app.put('/api/operators/:id', requireAdminAuth, async (req, res) => {
   const { id } = req.params;
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
     return res.status(400).json({ error: 'Identificador de operador inválido.' });
   }
-  db.operators = db.operators.filter((o) => o.id !== id);
-  saveDatabase(db);
+  const { name, role, canStart, canClose, active, pin } = req.body || {};
+
+  try {
+    const operator = await getStoredOperator(id);
+    if (!operator) {
+      return res.status(404).json({ error: 'Operador não encontrado.' });
+    }
+    const operators = await getStoredOperators();
+    const updatedOperator = { ...operator };
+
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim() || name.trim().length > 128) {
+        return res.status(400).json({ error: 'Nome de operador inválido.' });
+      }
+      if (operators.some((entry) =>
+        entry.id !== id &&
+        typeof entry.name === 'string' &&
+        entry.name.trim().toLowerCase() === name.trim().toLowerCase()
+      )) {
+        return res.status(409).json({ error: 'Já existe um operador com esse nome.' });
+      }
+      updatedOperator.name = name.trim();
+    }
+    if (role !== undefined) {
+      if (typeof role !== 'string' || role.trim().length > 128) {
+        return res.status(400).json({ error: 'Função de operador inválida.' });
+      }
+      updatedOperator.role = role.trim() || 'Operador';
+    }
+    if (canStart !== undefined) {
+      if (typeof canStart !== 'boolean') return res.status(400).json({ error: 'Permissão inválida.' });
+      updatedOperator.canStart = canStart;
+    }
+    if (canClose !== undefined) {
+      if (typeof canClose !== 'boolean') return res.status(400).json({ error: 'Permissão inválida.' });
+      updatedOperator.canClose = canClose;
+    }
+    if (active !== undefined) {
+      if (typeof active !== 'boolean') return res.status(400).json({ error: 'Estado inválido.' });
+      updatedOperator.active = active;
+    }
+    if (pin !== undefined) {
+      if (typeof pin !== 'string' || !PIN_PATTERN.test(pin)) {
+        return res.status(400).json({ error: 'O PIN deve conter entre 4 e 8 dígitos.' });
+      }
+      if (operators.some((entry) =>
+        entry.id !== id &&
+        entry.pinSalt &&
+        entry.pinHash &&
+        verifySecret(pin, entry.pinSalt, entry.pinHash)
+      )) {
+        return res.status(409).json({ error: 'Este PIN já está atribuído a outro operador.' });
+      }
+      const pinCredential = createSecretHash(pin);
+      updatedOperator.pinSalt = pinCredential.salt;
+      updatedOperator.pinHash = pinCredential.hash;
+    }
+
+    if (!(await updateStoredOperator({ ...updatedOperator, id }))) {
+      return res.status(404).json({ error: 'Operador não encontrado.' });
+    }
+    for (const [token, session] of sessions) {
+      if (session.operatorId === id) sessions.delete(token);
+    }
+    res.json(publicOperator(updatedOperator));
+  } catch (error) {
+    return respondWithOperatorStoreError(res, error);
+  }
+});
+
+app.delete('/api/operators/:id', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador de operador inválido.' });
+  }
+  try {
+    await deleteStoredOperator(id);
+  } catch (error) {
+    return respondWithOperatorStoreError(res, error);
+  }
   for (const [token, session] of sessions) {
     if (session.operatorId === id) sessions.delete(token);
   }
@@ -862,7 +1029,12 @@ app.delete('/api/stoppage-types/:id', requireAdminAuth, (req, res) => {
 });
 
 // 8. Reset to defaults (Protected by requireAdminAuth)
-app.post('/api/reset-defaults', requireAdminAuth, (_req, res) => {
+app.post('/api/reset-defaults', requireAdminAuth, async (_req, res) => {
+  try {
+    await deleteStoredOperators();
+  } catch (error) {
+    return respondWithOperatorStoreError(res, error);
+  }
   const db = loadDatabase();
   db.operators = DEFAULT_OPERATORS;
   db.stoppageTypes = DEFAULT_STOPPAGE_TYPES;
@@ -879,6 +1051,7 @@ app.post('/api/reset-defaults', requireAdminAuth, (_req, res) => {
 // Development vs Production setup
 async function startServer() {
   loadDatabase();
+  await getStoredOperators();
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

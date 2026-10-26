@@ -217,20 +217,24 @@ export default function App() {
   // Operator CRUD Handlers
   const handleAddOperator = async (data: Omit<Operator, 'id' | 'active'>, pin: string) => {
     const savedOp = await apiAddOperator(data, pin);
-    const updated = [...operators, savedOp];
-    setOperators(updated);
+    cloudStateVersionRef.current += 1;
+    setOperators((current) =>
+      current.some((operator) => operator.id === savedOp.id)
+        ? current.map((operator) => (operator.id === savedOp.id ? savedOp : operator))
+        : [...current, savedOp]
+    );
   };
 
   const handleUpdateOperator = async (id: string, data: Partial<Operator> & { pin?: string }) => {
     const updatedOp = await apiUpdateOperator(id, data);
-    const updated = operators.map((o) => (o.id === id ? updatedOp : o));
-    setOperators(updated);
+    cloudStateVersionRef.current += 1;
+    setOperators((current) => current.map((operator) => (operator.id === id ? updatedOp : operator)));
   };
 
   const handleDeleteOperator = async (id: string) => {
     await apiDeleteOperator(id);
-    const updated = operators.filter((o) => o.id !== id);
-    setOperators(updated);
+    cloudStateVersionRef.current += 1;
+    setOperators((current) => current.filter((operator) => operator.id !== id));
   };
 
   // Stoppage Types CRUD Handlers
@@ -257,6 +261,7 @@ export default function App() {
 
   const handleResetDefaults = async () => {
     await apiResetDefaults();
+    cloudStateVersionRef.current += 1;
     setOperators([]);
     setStoppageTypes(INITIAL_STOPPAGE_TYPES);
     localStorage.removeItem('manutrack_operators_cache');
