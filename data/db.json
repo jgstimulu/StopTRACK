@@ -1,7 +1,9 @@
 {
   "admin": {
     "email": "jricardosbd@gmail.com",
-    "password": "admin2026",
+    "passwordSalt": "6768733cfddcb54b412293579dd0a4e6",
+    "passwordHash": "c0e7976f7a81e377e541002951ab74c1dc7ecda02566846bdc0f78253fbe22a1c4af8a8a2c6cb3f8bb50572113569dbf3620562c1b14c2ff7252e5f029ddee99",
+    "passwordAlgorithm": "pbkdf2-sha512-v1",
     "updatedAt": 1792525000000
   },
   "operators": [],
