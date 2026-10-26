@@ -166,9 +166,28 @@ function loadLegacyDatabase(): DatabaseSchema {
     : {};
   let admin = parsed.admin;
 
-  if (!admin?.passwordSalt || !admin?.passwordHash) {
-    const legacyPassword = typeof admin?.password === 'string' ? admin.password : ADMIN_PASSWORD;
-    const legacyEmail = typeof admin?.email === 'string' ? admin.email : ADMIN_EMAIL;
+  if (ADMIN_EMAIL || ADMIN_PASSWORD) {
+    if (
+      !ADMIN_EMAIL ||
+      !ADMIN_PASSWORD ||
+      ADMIN_EMAIL.length > 254 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ADMIN_EMAIL) ||
+      ADMIN_PASSWORD.length < 12 ||
+      ADMIN_PASSWORD.length > 256
+    ) {
+      throw new Error('Configure ADMIN_EMAIL válido e ADMIN_PASSWORD entre 12 e 256 caracteres nos segredos do servidor.');
+    }
+    const password = createSecretHash(ADMIN_PASSWORD);
+    admin = {
+      email: ADMIN_EMAIL,
+      passwordSalt: password.salt,
+      passwordHash: password.hash,
+      passwordAlgorithm: 'scrypt',
+      updatedAt: Date.now(),
+    };
+  } else if (!admin?.passwordSalt || !admin?.passwordHash) {
+    const legacyPassword = typeof admin?.password === 'string' ? admin.password : undefined;
+    const legacyEmail = typeof admin?.email === 'string' ? admin.email : undefined;
     if (
       !legacyEmail ||
       legacyEmail.length > 254 ||
@@ -177,7 +196,7 @@ function loadLegacyDatabase(): DatabaseSchema {
       legacyPassword.length < 12 ||
       legacyPassword.length > 256
     ) {
-      throw new Error('Configure credenciais administrativas seguras antes do primeiro acesso.');
+      throw new Error('Configure ADMIN_EMAIL e ADMIN_PASSWORD seguros nos segredos do servidor antes do primeiro acesso.');
     }
     const password = createSecretHash(legacyPassword);
     admin = {
