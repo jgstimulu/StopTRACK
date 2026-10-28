@@ -74,6 +74,7 @@ export interface StoppageRecord {
   shift?: string; // e.g. "1º Turno", "2º Turno", "Turno Noturno"
   priority?: StoppagePriority | string; // 'Baixa' | 'Média' | 'Alta' | 'Crítica'
   status?: StoppageStatus | string; // 'Resolvido' | 'Em Decorrer' | 'Pendente'
+  machineStopped?: boolean; // A máquina parou? (tique no fecho). Registos antigos não têm este campo.
   initiatedBy: string;
   closedBy: string;
   stoppageType: string;

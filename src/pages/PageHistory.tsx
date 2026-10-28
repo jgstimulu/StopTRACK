@@ -664,7 +664,7 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
                 {/* Expanded Details */}
                 {isExpanded && (
                   <div className="border-t border-slate-800 bg-slate-950/40 p-3.5 space-y-2.5 text-xs">
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
+                    <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-[11px]">
                       <div>
                         <span className="text-slate-400 block font-medium">Turno:</span>
                         <strong className="text-amber-300 font-mono">{shiftLabel}</strong>
@@ -698,6 +698,16 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
                         >
                           {statusLabel}
                         </strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block font-medium">Máquina parou?</span>
+                        {r.machineStopped === true ? (
+                          <strong className="text-rose-300 font-bold">Sim</strong>
+                        ) : r.machineStopped === false ? (
+                          <strong className="text-emerald-300 font-medium">Não</strong>
+                        ) : (
+                          <strong className="text-slate-500 font-normal">Não indicado</strong>
+                        )}
                       </div>
                       <div>
                         <span className="text-slate-400 block font-medium">Iniciado por:</span>

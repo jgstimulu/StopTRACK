@@ -13,6 +13,7 @@ export type TargetFieldKey =
   | 'stoppageType'
   | 'priority'
   | 'status'
+  | 'machineStopped'
   | 'stoppageDescription'
   | 'actionsTaken'
   | 'otherObservations';
@@ -114,6 +115,14 @@ export const TARGET_FIELDS: TargetFieldDef[] = [
     example: 'Resolvido',
     required: false,
     synonyms: ['estado', 'status', 'estadodaavaria', 'estadoparagem', 'situacao', 'fase'],
+  },
+  {
+    key: 'machineStopped',
+    label: 'A Máquina Parou?',
+    description: 'Indica se a máquina chegou a parar (Sim ou Não)',
+    example: 'Sim',
+    required: false,
+    synonyms: ['amaquinaparou', 'maquinaparou', 'maquinaparada', 'parou', 'machinestopped'],
   },
   {
     key: 'stoppageDescription',
@@ -324,6 +333,23 @@ export function autoDetectColumnMapping(
 
     // Procura o campo oficial que tenha este sinónimo
     let matchedKey: TargetFieldKey | 'ignore' = 'ignore';
+
+    // 1ª passagem: correspondência exata tem prioridade sobre correspondências parciais
+    // (ex.: "A Máquina Parou?" não deve ser confundida com a coluna "Máquina").
+    const exactField = TARGET_FIELDS.find((field) =>
+      field.synonyms.some((s) => normalizeHeader(s) === norm)
+    );
+    if (exactField) {
+      usedTargets.add(exactField.key);
+      return {
+        index: idx,
+        rawName: rawHeader.trim() || `Coluna ${idx + 1}`,
+        normalizedName: norm,
+        sampleValue: sampleVal,
+        mappedTo: exactField.key,
+        autoDetected: true,
+      };
+    }
 
     for (const field of TARGET_FIELDS) {
       // Se já foi associado a outra coluna, evita duplicados a menos que seja um match exato
@@ -596,6 +622,21 @@ export function parseCSVStoppagesWithMapping(
       else statusVal = 'Resolvido';
     }
 
+    // 8. A máquina parou? (Sim/Não) — vazio ou não reconhecido fica por indicar
+    const idxStopped = targetToColIdx['machineStopped'];
+    let machineStopped: boolean | undefined;
+    if (idxStopped !== undefined && cols[idxStopped] && cols[idxStopped].trim()) {
+      const rawStopped = normalizeHeader(cols[idxStopped]);
+      if (rawStopped.startsWith('nao') || ['n', 'no', 'false', '0', 'continuou'].includes(rawStopped)) {
+        machineStopped = false;
+      } else if (
+        rawStopped.startsWith('sim') ||
+        ['s', 'y', 'yes', 'true', '1', 'x', 'parou'].includes(rawStopped)
+      ) {
+        machineStopped = true;
+      }
+    }
+
     const record: StoppageRecord = {
       id: `imported-${Date.now()}-${i}-${machineCode}`,
       machineId: machineCode,
@@ -610,6 +651,7 @@ export function parseCSVStoppagesWithMapping(
       shift: shiftVal,
       priority: priorityVal,
       status: statusVal,
+      machineStopped,
       initiatedBy,
       closedBy,
       stoppageType,
