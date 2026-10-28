@@ -18,6 +18,8 @@ import {
   Activity,
   Flame,
   ShieldAlert,
+  Power,
+  Check,
 } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
 import {
@@ -105,6 +107,8 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
   const [stoppageType, setStoppageType] = useState<string>(defaultStoppageType);
   const [priority, setPriority] = useState<StoppagePriority>('Média');
   const [status, setStatus] = useState<StoppageStatus>('Resolvido');
+  // "A máquina parou?" — resposta simples com um tique (por defeito: parou).
+  const [machineStopped, setMachineStopped] = useState<boolean>(true);
   const [stoppageDescription, setStoppageDescription] = useState<string>('');
   const [actionsTaken, setActionsTaken] = useState<string>('');
   const [otherObservations, setOtherObservations] = useState<string>('');
@@ -218,6 +222,7 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
       shift: shift.trim(),
       priority,
       status,
+      machineStopped,
       initiatedBy: initiatedBy.trim(),
       closedBy: closedBy.trim(),
       stoppageType: stoppageType,
@@ -627,6 +632,49 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
               );
             })}
           </div>
+        </div>
+
+        {/* 5.1 A máquina parou? — resposta simples com um tique */}
+        <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-3.5 shadow-sm">
+          <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
+            <Power className="h-3.5 w-3.5 text-rose-400" />
+            <span>A máquina parou?</span>
+          </label>
+
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={machineStopped}
+            onClick={() => {
+              playIndustrialClick();
+              setMachineStopped((prev) => !prev);
+            }}
+            className={`mt-2 flex w-full items-center gap-3 rounded-xl border-2 px-3.5 py-3 text-left transition-all active:scale-[0.99] ${
+              machineStopped
+                ? 'border-rose-500 bg-rose-500/15 text-rose-200'
+                : 'border-slate-700 bg-slate-800/60 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            <span
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border-2 transition-all ${
+                machineStopped
+                  ? 'border-rose-400 bg-rose-500 text-white'
+                  : 'border-slate-500 bg-slate-900 text-transparent'
+              }`}
+            >
+              <Check className="h-5 w-5" strokeWidth={3} />
+            </span>
+            <span className="flex flex-col">
+              <span className="text-sm font-bold">
+                {machineStopped ? 'Sim, a máquina parou' : 'Não, a máquina não parou'}
+              </span>
+              <span className="text-[11px] text-slate-400">
+                {machineStopped
+                  ? 'Toque para desmarcar se a máquina continuou a trabalhar'
+                  : 'Toque para marcar se a máquina chegou a parar'}
+              </span>
+            </span>
+          </button>
         </div>
 
         {/* 6. Descrição da Paragem */}
