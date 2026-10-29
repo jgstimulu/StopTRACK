@@ -5,12 +5,35 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as supabaseStore from './server/supabaseStore';
+import * as loginThrottle from './server/loginThrottle';
+import {
+  sanitizeActiveDowntime,
+  sanitizeStoppageRecord,
+  type SanitizedStoppage,
+} from './server/stoppageSanitizer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+
+/**
+ * Número de proxies à frente da aplicação, para que req.ip seja o IP real do cliente
+ * (e não o do proxy). Por defeito 1: Cloud Run / AI Studio colocam um proxy da Google à frente.
+ * Pode ser alterado com a variável TRUST_PROXY: um número (saltos), "false" (sem proxy, ex.:
+ * execução local direta) ou uma lista de IPs/sub-redes. Evite "true": permitiria falsificar o IP.
+ */
+function parseTrustProxy(value: string | undefined): boolean | number | string {
+  const raw = value?.trim();
+  if (!raw) return 1;
+  const lower = raw.toLowerCase();
+  if (lower === 'false' || lower === '0') return false;
+  if (lower === 'true') return true;
+  if (/^\d+$/.test(lower)) return Number(lower);
+  return raw;
+}
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -62,13 +85,20 @@ type Session = {
   canClose?: boolean;
   expiresAt: number;
 };
-const pinLoginFailures = new Map<string, { count: number; lockedUntil: number }>();
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, failure] of pinLoginFailures) {
-    if (failure.lockedUntil <= now && failure.count === 0) pinLoginFailures.delete(ip);
-  }
-}, 10 * 60 * 1000).unref();
+
+// Limites de tentativas (janela e bloqueio de 15 minutos, ver server/loginThrottle.ts).
+const ADMIN_LOGIN_LIMIT_PER_IP = 10;
+const ADMIN_LOGIN_LIMIT_PER_EMAIL = 10;
+const OPERATOR_PIN_LIMIT_PER_OPERATOR = 5;
+const OPERATOR_PIN_LIMIT_PER_IP = 30; // folga para vários tablets atrás do mesmo IP
+const DELETE_PIN_LIMIT_PER_IP = 5;
+const DELETE_PIN_LIMIT_GLOBAL = 40;
+
+function rejectLocked(res: express.Response, lockedUntil: number, subject?: string) {
+  const { message, retryAfterSeconds } = loginThrottle.lockedResponse(lockedUntil, subject);
+  res.set('Retry-After', String(retryAfterSeconds));
+  return res.status(429).json({ error: message });
+}
 
 function hashSecret(secret: string, salt: string): string {
   return crypto.scryptSync(secret, salt, 64).toString('hex');
@@ -358,16 +388,31 @@ app.post('/api/admin/login', async (req, res) => {
     return res.status(400).json({ error: 'Email e palavra-passe são obrigatórios.' });
   }
 
+  const normalizedEmail = email.trim().toLowerCase();
+  const throttleKeys = [
+    `admin:ip:${req.ip || 'unknown'}`,
+    `admin:email:${loginThrottle.hashKeyPart(normalizedEmail)}`,
+  ];
+
   try {
+    const lockedUntil = await loginThrottle.getLockedUntil(throttleKeys);
+    if (lockedUntil > Date.now()) {
+      return rejectLocked(res, lockedUntil, 'tentativas de início de sessão');
+    }
+
     const admin = await getOrInitializeAdminCredentials();
-    const normalizedEmail = email.trim().toLowerCase();
     if (
       normalizedEmail !== admin.email.trim().toLowerCase() ||
       !verifyAdminSecret(password, admin)
     ) {
+      await loginThrottle.registerFailure([
+        { key: throttleKeys[0], limit: ADMIN_LOGIN_LIMIT_PER_IP },
+        { key: throttleKeys[1], limit: ADMIN_LOGIN_LIMIT_PER_EMAIL },
+      ]);
       return res.status(401).json({ error: 'Credenciais de administrador incorretas.' });
     }
 
+    await loginThrottle.clearFailures(throttleKeys);
     const token = await createSession({ role: 'admin' });
     res.json({
       success: true,
@@ -445,17 +490,30 @@ app.post('/api/admin/logout', async (req, res) => {
 });
 
 app.post('/api/operators/login', async (req, res) => {
-  const clientKey = req.ip || 'unknown';
-  const failure = pinLoginFailures.get(clientKey);
-  if (failure && failure.lockedUntil > Date.now()) {
-    return res.status(429).json({ error: 'Demasiadas tentativas. Aguarde 15 minutos antes de tentar novamente.' });
-  }
   const { operatorId, pin } = req.body || {};
-  if (typeof operatorId !== 'string' || typeof pin !== 'string' || !PIN_PATTERN.test(pin)) {
+  if (
+    typeof operatorId !== 'string' ||
+    operatorId.length < 1 ||
+    operatorId.length > 128 ||
+    typeof pin !== 'string' ||
+    !PIN_PATTERN.test(pin)
+  ) {
     return res.status(400).json({ error: 'Selecione o operador e introduza um PIN válido.' });
   }
+
+  // O bloqueio é por operador (trava a adivinha do PIN de uma pessoa, venha de onde vier)
+  // e por IP, com mais folga porque vários tablets podem partilhar o mesmo IP.
+  const throttleKeys = [
+    `operator:id:${loginThrottle.hashKeyPart(operatorId)}`,
+    `operator:ip:${req.ip || 'unknown'}`,
+  ];
+
   let operator;
   try {
+    const lockedUntil = await loginThrottle.getLockedUntil(throttleKeys);
+    if (lockedUntil > Date.now()) {
+      return rejectLocked(res, lockedUntil);
+    }
     operator = await supabaseStore.getOperator(operatorId);
   } catch (error) {
     return respondWithStoreError(res, error);
@@ -466,14 +524,20 @@ app.post('/api/operators/login', async (req, res) => {
     !operator?.pinHash ||
     !verifySecret(pin, operator.pinSalt, operator.pinHash)
   ) {
-    const nextCount = (failure?.count || 0) + 1;
-    pinLoginFailures.set(clientKey, {
-      count: nextCount >= 5 ? 0 : nextCount,
-      lockedUntil: nextCount >= 5 ? Date.now() + 15 * 60 * 1000 : 0,
-    });
+    try {
+      const lockedUntil = await loginThrottle.registerFailure([
+        { key: throttleKeys[0], limit: OPERATOR_PIN_LIMIT_PER_OPERATOR },
+        { key: throttleKeys[1], limit: OPERATOR_PIN_LIMIT_PER_IP },
+      ]);
+      if (lockedUntil > Date.now()) {
+        return rejectLocked(res, lockedUntil);
+      }
+    } catch (error) {
+      console.error('Failed to register PIN failure:', error);
+    }
     return res.status(401).json({ error: 'PIN incorreto ou operador sem PIN configurado.' });
   }
-  pinLoginFailures.delete(clientKey);
+  await loginThrottle.clearFailures([throttleKeys[0]]);
   try {
     const token = await createSession({
       role: 'operator',
@@ -566,10 +630,11 @@ app.post('/api/active-stoppages', async (req, res) => {
       }
     }
 
+    // Só os campos conhecidos são guardados (ver server/stoppageSanitizer.ts).
+    const cleanedDowntime = sanitizeActiveDowntime(incoming, machineId);
     const downtime = {
-      ...incoming,
-      machineId,
-      shift: incoming.shift || computeShift(incoming.startTimestamp),
+      ...cleanedDowntime,
+      shift: cleanedDowntime.shift || computeShift(incoming.startTimestamp),
     };
     const result = await supabaseStore.saveActiveDowntime(
       downtime,
@@ -651,12 +716,14 @@ app.post('/api/stoppages', async (req, res) => {
       });
     }
 
-    const record = {
-      ...incoming,
-      machineId,
-      shift: incoming.shift || computeShift(incoming.startTimestamp, incoming.startTime),
-      priority: incoming.priority || 'Média',
-      status: incoming.status || 'Resolvido',
+    // Só os campos conhecidos são guardados (ver server/stoppageSanitizer.ts).
+    const sanitized = sanitizeStoppageRecord(incoming);
+    if (sanitized.ok === false) {
+      return res.status(400).json({ error: sanitized.error });
+    }
+    const record: SanitizedStoppage = {
+      ...sanitized.record,
+      shift: sanitized.record.shift || computeShift(incoming.startTimestamp, incoming.startTime),
     };
     const result = await supabaseStore.saveStoppage(record, Boolean(isClosingActiveDowntime));
     if (!result?.success) {
@@ -679,11 +746,22 @@ app.delete('/api/stoppages/:id', async (req, res) => {
   const pinHeader = req.headers['x-deletion-pin'];
   const pinBody = req.body?.pin;
   const providedPin = (pinHeader || pinBody || '').toString().trim();
+  // O PIN é testado contra todos os operadores com permissão, por isso limita-se por IP
+  // e globalmente (este último cobre quem mude de IP a cada tentativa).
+  const deleteThrottleKeys = [`delete:ip:${req.ip || 'unknown'}`, 'delete:global'];
   try {
-    const [session, operators] = await Promise.all([
-      getSession(req),
-      supabaseStore.getOperators(),
-    ]);
+    const session = await getSession(req);
+    const hasSessionAuthorization = session?.role === 'admin' ||
+      (session?.role === 'operator' && Boolean(session.canClose));
+
+    if (!hasSessionAuthorization && providedPin) {
+      const lockedUntil = await loginThrottle.getLockedUntil(deleteThrottleKeys);
+      if (lockedUntil > Date.now()) {
+        return rejectLocked(res, lockedUntil);
+      }
+    }
+
+    const operators = hasSessionAuthorization ? [] : await supabaseStore.getOperators();
     const operatorPinValid = PIN_PATTERN.test(providedPin) && operators.some((operator) =>
       operator.active &&
       operator.canClose &&
@@ -691,11 +769,22 @@ app.delete('/api/stoppages/:id', async (req, res) => {
       operator.pinHash &&
       verifySecret(providedPin, operator.pinSalt, operator.pinHash)
     );
-    const isAuthorized = session?.role === 'admin' ||
-      (session?.role === 'operator' && session.canClose) ||
-      operatorPinValid;
+    const isAuthorized = hasSessionAuthorization || operatorPinValid;
     if (!isAuthorized) {
+      // Só conta como tentativa quando foi realmente indicado um PIN.
+      if (providedPin) {
+        const lockedUntil = await loginThrottle.registerFailure([
+          { key: deleteThrottleKeys[0], limit: DELETE_PIN_LIMIT_PER_IP },
+          { key: deleteThrottleKeys[1], limit: DELETE_PIN_LIMIT_GLOBAL },
+        ]);
+        if (lockedUntil > Date.now()) {
+          return rejectLocked(res, lockedUntil);
+        }
+      }
       return res.status(401).json({ error: 'PIN de operador autorizado incorreto.' });
+    }
+    if (providedPin && !hasSessionAuthorization) {
+      await loginThrottle.clearFailures([deleteThrottleKeys[0]]);
     }
 
     const deletedCount = await supabaseStore.deleteStoppage(id);
@@ -708,6 +797,25 @@ app.delete('/api/stoppages/:id', async (req, res) => {
     return respondWithStoreError(res, error);
   }
 });
+
+/** Limpa uma lista de registos importados (CSV / migração); indica qual o registo inválido, se algum. */
+function sanitizeImportedRecords(
+  records: unknown[]
+): { ok: true; records: Record<string, unknown>[] } | { ok: false; error: string } {
+  const cleaned: Record<string, unknown>[] = [];
+  for (let index = 0; index < records.length; index++) {
+    const result = sanitizeStoppageRecord(records[index], { requireDateAndTime: false });
+    if (result.ok === false) {
+      return { ok: false, error: `Registo ${index + 1}: ${result.error}` };
+    }
+    const record = result.record;
+    cleaned.push({
+      ...record,
+      shift: record.shift || computeShift(record.startTimestamp, record.startTime),
+    });
+  }
+  return { ok: true, records: cleaned };
+}
 
 // 5. Device migration and CSV imports write directly to the shared database.
 app.post('/api/migrate-local', requireAdminAuth, async (req, res) => {
@@ -728,14 +836,11 @@ app.post('/api/migrate-local', requireAdminAuth, async (req, res) => {
     return res.status(400).json({ error: 'localRecords deve conter no máximo 10 000 registos válidos.' });
   }
   try {
-    const sanitized = localRecords.map((record) => ({
-      ...record,
-      machineId: record.machineId.trim().replace(/\s+/g, '').toUpperCase(),
-      shift: record.shift || computeShift(record.startTimestamp, record.startTime),
-      priority: record.priority || 'Média',
-      status: record.status || 'Resolvido',
-    }));
-    const result = await supabaseStore.batchImportStoppages(sanitized, false);
+    const sanitized = sanitizeImportedRecords(localRecords);
+    if (sanitized.ok === false) {
+      return res.status(400).json({ error: sanitized.error });
+    }
+    const result = await supabaseStore.batchImportStoppages(sanitized.records, false);
     res.json({
       success: true,
       addedCount: result?.importedCount || 0,
@@ -765,15 +870,12 @@ app.post('/api/stoppages/batch-import', requireAdminAuth, async (req, res) => {
     return res.status(400).json({ error: 'records deve conter no máximo 10 000 registos válidos.' });
   }
 
-  const sanitized = records.map((record) => ({
-    ...record,
-    machineId: record.machineId.trim().replace(/\s+/g, '').toUpperCase(),
-    shift: record.shift || computeShift(record.startTimestamp, record.startTime),
-    priority: record.priority || 'Média',
-    status: record.status || 'Resolvido',
-  }));
+  const sanitized = sanitizeImportedRecords(records);
+  if (sanitized.ok === false) {
+    return res.status(400).json({ error: sanitized.error });
+  }
   try {
-    const result = await supabaseStore.batchImportStoppages(sanitized, replaceExisting);
+    const result = await supabaseStore.batchImportStoppages(sanitized.records, replaceExisting);
     res.json({
       success: true,
       importedCount: result.importedCount,
