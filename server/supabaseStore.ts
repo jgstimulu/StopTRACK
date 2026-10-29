@@ -407,3 +407,39 @@ export async function deleteSessionsForOperator(operatorId: string) {
   const query = new URLSearchParams({ operator_id: `eq.${operatorId}` });
   await request(`/auth_sessions?${query}`, { method: 'DELETE' });
 }
+
+// Limite de tentativas de login (tabela e funções em supabase/migrations/20261028000000_login_throttling.sql).
+export async function loginThrottleStatus(keys: string[], now: number): Promise<number> {
+  const result = await request<number | string | null>('/rpc/login_throttle_status', {
+    method: 'POST',
+    body: JSON.stringify({ p_keys: keys, p_now: now }),
+  });
+  return Number(result) || 0;
+}
+
+export async function loginThrottleFail(
+  key: string,
+  now: number,
+  limit: number,
+  windowMs: number,
+  lockMs: number
+): Promise<number> {
+  const result = await request<number | string | null>('/rpc/login_throttle_fail', {
+    method: 'POST',
+    body: JSON.stringify({
+      p_key: key,
+      p_now: now,
+      p_limit: limit,
+      p_window_ms: windowMs,
+      p_lock_ms: lockMs,
+    }),
+  });
+  return Number(result) || 0;
+}
+
+export async function loginThrottleClear(keys: string[]) {
+  await request('/rpc/login_throttle_clear', {
+    method: 'POST',
+    body: JSON.stringify({ p_keys: keys }),
+  });
+}

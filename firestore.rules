@@ -1,59 +1,10 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128;
-    }
-
-    // Default deny catch-all
+    // A aplicação já não usa o Firestore: os dados vivem no Supabase e são acedidos
+    // apenas pelo servidor. Nega-se todo o acesso de clientes.
     match /{document=**} {
       allow read, write: if false;
-    }
-
-    // Stoppage Records Collection
-    match /stoppages/{stoppageId} {
-      allow read: if true;
-      allow create, update: if isValidId(stoppageId)
-        && request.resource.data.machineId is string
-        && request.resource.data.machineId.size() <= 64
-        && request.resource.data.startTimestamp is number
-        && request.resource.data.durationMs is number;
-      allow delete: if isValidId(stoppageId);
-    }
-
-    // Operators Collection
-    match /operators/{operatorId} {
-      allow read: if true;
-      allow create, update: if isValidId(operatorId)
-        && request.resource.data.name is string
-        && request.resource.data.name.size() > 0
-        && request.resource.data.name.size() <= 128;
-      allow delete: if isValidId(operatorId);
-    }
-
-    // Stoppage Types Collection
-    match /stoppageTypes/{typeId} {
-      allow read: if true;
-      allow create, update: if isValidId(typeId)
-        && request.resource.data.name is string
-        && request.resource.data.name.size() > 0
-        && request.resource.data.name.size() <= 128;
-      allow delete: if isValidId(typeId);
-    }
-
-    // Active Downtimes Collection
-    match /activeDowntimes/{machineId} {
-      allow read: if true;
-      allow create, update: if isValidId(machineId)
-        && request.resource.data.machineId is string
-        && request.resource.data.startTimestamp is number;
-      allow delete: if isValidId(machineId);
-    }
-
-    // Connection testing
-    match /test/connection {
-      allow read: if true;
     }
   }
 }
