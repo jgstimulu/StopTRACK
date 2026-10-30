@@ -83,6 +83,23 @@ export interface StoppageRecord {
   otherObservations?: string;
   stages?: StoppageStage[]; // Decomposição cronológica da intervenção por etapas
   createdAt: number;
+  lastEditedAt?: number; // Última edição feita no histórico (preenchido só pelo servidor)
+  lastEditedBy?: string; // Quem fez a última edição (preenchido só pelo servidor)
+}
+
+/** Campos de um registo que podem ser alterados a partir do histórico. */
+export interface StoppageEditChanges {
+  stoppageType?: string;
+  priority?: StoppagePriority;
+  status?: StoppageStatus;
+  machineStopped?: boolean;
+  shift?: string;
+  initiatedBy?: string;
+  closedBy?: string;
+  stoppageDescription?: string;
+  actionsTaken?: string;
+  otherObservations?: string;
+  stages?: StoppageStage[];
 }
 
 export type AppPage =

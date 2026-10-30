@@ -9,6 +9,7 @@ import {
   Machine,
   ActiveDowntime,
   StoppageRecord,
+  StoppageEditChanges,
   Operator,
   StoppageTypeItem,
   StoppageStage,
@@ -28,6 +29,7 @@ import {
   apiCancelActiveDowntime,
   apiSaveStoppage,
   apiDeleteStoppage,
+  apiEditStoppage,
   apiMigrateLocalRecords,
   apiBatchImportStoppages,
   apiAddOperator,
@@ -419,6 +421,36 @@ export default function App() {
     setToastMessage('Registo de paragem eliminado com sucesso da base de dados.');
   };
 
+  // Edit an existing stoppage from the history (PIN of an authorised operator, or admin session)
+  const handleEditRecord = async (
+    id: string,
+    changes: StoppageEditChanges,
+    pin: string,
+    baseLastEditedAt?: number
+  ) => {
+    // Same protection as closing a stoppage: a sync that started before the edit must not
+    // overwrite the list with the old version of the record.
+    isSavingStoppageRef.current = true;
+    cloudStateVersionRef.current += 1;
+    try {
+      const { record, changed } = await apiEditStoppage(id, changes, pin, baseLastEditedAt);
+      setRecords((prev) => {
+        const updated = prev.map((r) => (r.id === id ? record : r));
+        try {
+          localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updated));
+        } catch {
+          // Ignore
+        }
+        return updated;
+      });
+      setToastMessage(
+        changed ? 'Registo de paragem atualizado com sucesso.' : 'Não havia alterações a guardar.'
+      );
+    } finally {
+      isSavingStoppageRef.current = false;
+    }
+  };
+
   // Handler for manual retrospective stoppage entry
   const handleSaveManualRecord = async (newRecord: StoppageRecord, operatorId: string, pin: string) => {
     await apiOperatorLogin(operatorId, pin);
@@ -727,6 +759,9 @@ export default function App() {
             records={records}
             onBackToHome={() => setCurrentPage('home')}
             onDeleteRecord={handleDeleteRecord}
+            onEditRecord={handleEditRecord}
+            availableOperators={operators}
+            availableStoppageTypes={stoppageTypes}
             onOpenManualEntry={() => setCurrentPage('manual_entry')}
           />
         )}

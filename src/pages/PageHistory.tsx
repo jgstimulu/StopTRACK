@@ -12,6 +12,7 @@ import {
   ChevronRight,
   ChevronDown,
   Trash2,
+  Pencil,
   CalendarDays,
   X,
   FileDown,
@@ -21,7 +22,12 @@ import {
   CheckCircle,
 } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
-import { StoppageRecord } from '../types/manutrack';
+import {
+  Operator,
+  StoppageEditChanges,
+  StoppageRecord,
+  StoppageTypeItem,
+} from '../types/manutrack';
 import { STOPPAGE_TYPES } from '../data/initialData';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
 import {
@@ -32,11 +38,20 @@ import {
 import { getShiftFromTimeString } from '../utils/shift';
 import { normalizeDateToYMD, getLocalYMD } from '../utils/formatters';
 import { DeletePinModal } from '../components/DeletePinModal';
+import { EditStoppageModal } from '../components/EditStoppageModal';
 
 interface PageHistoryProps {
   records: StoppageRecord[];
   onBackToHome: () => void;
   onDeleteRecord?: (id: string, pin: string) => Promise<void>;
+  onEditRecord?: (
+    id: string,
+    changes: StoppageEditChanges,
+    pin: string,
+    baseLastEditedAt?: number
+  ) => Promise<void>;
+  availableOperators?: Operator[];
+  availableStoppageTypes?: StoppageTypeItem[];
   onOpenManualEntry?: () => void;
 }
 
@@ -46,6 +61,9 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
   records,
   onBackToHome,
   onDeleteRecord,
+  onEditRecord,
+  availableOperators,
+  availableStoppageTypes,
   onOpenManualEntry,
 }) => {
   const [search, setSearch] = useState('');
@@ -59,6 +77,7 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
   const [customEndDate, setCustomEndDate] = useState<string>('');
   const [expandedRecordId, setExpandedRecordId] = useState<string | null>(null);
   const [stoppageToDelete, setStoppageToDelete] = useState<StoppageRecord | null>(null);
+  const [stoppageToEdit, setStoppageToEdit] = useState<StoppageRecord | null>(null);
   const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
   const [exportSuccessMessage, setExportSuccessMessage] = useState<string | null>(null);
 
@@ -288,6 +307,21 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
       setExportSuccessMessage('Registo de paragem eliminado com sucesso da base de dados!');
       setTimeout(() => setExportSuccessMessage(null), 4000);
     }
+  };
+
+  const handleConfirmEdit = async (
+    recordId: string,
+    changes: StoppageEditChanges,
+    pin: string,
+    baseLastEditedAt?: number
+  ) => {
+    if (!onEditRecord) return;
+    // Se falhar, o erro sobe ao formulário, que fica aberto e mostra a mensagem.
+    await onEditRecord(recordId, changes, pin, baseLastEditedAt);
+    setStoppageToEdit(null);
+    playSuccessChime();
+    setExportSuccessMessage('Paragem atualizada com sucesso!');
+    setTimeout(() => setExportSuccessMessage(null), 4000);
   };
 
   return (
@@ -824,21 +858,48 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
                       </div>
                     )}
 
-                    {onDeleteRecord && (
-                      <div className="pt-2 flex justify-end">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            playIndustrialClick();
-                            setStoppageToDelete(r);
-                          }}
-                          className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-1 text-[11px] font-semibold text-rose-300 hover:bg-rose-900/50 hover:text-rose-200 transition-colors shadow-sm"
-                          title="Eliminar este registo de paragem mediante introdução de PIN"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          <span>Remover</span>
-                        </button>
+                    {(r.lastEditedAt || r.lastEditedBy) && (
+                      <p className="pt-1 text-[10px] text-slate-500">
+                        Editado
+                        {r.lastEditedBy ? ` por ${r.lastEditedBy}` : ''}
+                        {r.lastEditedAt
+                          ? ` em ${new Date(r.lastEditedAt).toLocaleString('pt-PT')}`
+                          : ''}
+                      </p>
+                    )}
+
+                    {(onEditRecord || onDeleteRecord) && (
+                      <div className="pt-2 flex justify-end gap-2">
+                        {onEditRecord && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              playIndustrialClick();
+                              setStoppageToEdit(r);
+                            }}
+                            className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-950/40 px-2.5 py-1 text-[11px] font-semibold text-amber-300 hover:bg-amber-900/50 hover:text-amber-200 transition-colors shadow-sm"
+                            title="Editar esta paragem (requer PIN de operador autorizado)"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            <span>Editar</span>
+                          </button>
+                        )}
+                        {onDeleteRecord && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              playIndustrialClick();
+                              setStoppageToDelete(r);
+                            }}
+                            className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-1 text-[11px] font-semibold text-rose-300 hover:bg-rose-900/50 hover:text-rose-200 transition-colors shadow-sm"
+                            title="Eliminar este registo de paragem mediante introdução de PIN"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            <span>Remover</span>
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -986,6 +1047,16 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
         record={stoppageToDelete}
         onClose={() => setStoppageToDelete(null)}
         onConfirmDelete={handleConfirmDelete}
+      />
+
+      {/* Edição de paragem */}
+      <EditStoppageModal
+        isOpen={!!stoppageToEdit}
+        record={stoppageToEdit}
+        availableOperators={availableOperators}
+        availableStoppageTypes={availableStoppageTypes}
+        onClose={() => setStoppageToEdit(null)}
+        onSave={handleConfirmEdit}
       />
     </div>
   );

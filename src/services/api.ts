@@ -1,4 +1,10 @@
-import { Operator, StoppageTypeItem, StoppageRecord, ActiveDowntime } from '../types/manutrack';
+import {
+  Operator,
+  StoppageTypeItem,
+  StoppageRecord,
+  StoppageEditChanges,
+  ActiveDowntime,
+} from '../types/manutrack';
 
 export interface SharedPlantState {
   operators: Operator[];
@@ -184,6 +190,33 @@ export async function apiDeleteStoppage(id: string, pin?: string): Promise<void>
   if (!res.ok) {
     throw await responseError(res, 'PIN de segurança incorreto. Falha ao remover paragem.');
   }
+}
+
+/**
+ * Edita um registo já gravado. Exige sessão de administrador ou o PIN de um operador
+ * com permissão de fechar paragens. `baseLastEditedAt` é a versão que o ecrã viu: se o registo
+ * foi editado entretanto noutro posto, o servidor recusa (409) em vez de sobrepor.
+ */
+export async function apiEditStoppage(
+  id: string,
+  changes: StoppageEditChanges,
+  pin: string,
+  baseLastEditedAt?: number
+): Promise<{ record: StoppageRecord; changed: boolean }> {
+  const headers = getAuthHeaders();
+  const operatorToken = getOperatorToken();
+  if (!getAdminToken() && operatorToken) {
+    headers.Authorization = 'Bearer ' + operatorToken;
+  }
+
+  const res = await fetch(`/api/stoppages/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ changes, pin: pin.trim(), baseLastEditedAt }),
+  });
+  if (!res.ok) throw await responseError(res, 'Não foi possível guardar a edição.');
+  const data = await res.json();
+  return { record: data.record as StoppageRecord, changed: Boolean(data.changed) };
 }
 
 export async function apiMigrateLocalRecords(

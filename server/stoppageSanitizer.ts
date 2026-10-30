@@ -134,7 +134,7 @@ export function sanitizeActiveDowntime(input: Plain, machineId: string): Sanitiz
  */
 export function sanitizeStoppageRecord(
   input: unknown,
-  options: { requireDateAndTime?: boolean } = {}
+  options: { requireDateAndTime?: boolean; allowEditMetadata?: boolean } = {}
 ): SanitizeResult {
   // Importações (CSV / migração) sempre toleraram registos sem data ou hora; só o registo
   // feito na app (requireDateAndTime = true, por defeito) os exige.
@@ -191,6 +191,17 @@ export function sanitizeStoppageRecord(
 
   const stages = sanitizeStages(input.stages);
   if (stages.length > 0) record.stages = stages;
+
+  // "Editado por / em" só é aceite quando vem do próprio servidor (rota de edição);
+  // nos registos enviados por clientes e nas importações é sempre descartado.
+  if (options.allowEditMetadata) {
+    const lastEditedAt = finiteNumber(input.lastEditedAt, 0);
+    const lastEditedBy = optionalText(input.lastEditedBy, MAX_NAME);
+    if (lastEditedAt > 0 && lastEditedBy) {
+      record.lastEditedAt = lastEditedAt;
+      record.lastEditedBy = lastEditedBy;
+    }
+  }
 
   return { ok: true, record: record as SanitizedStoppage };
 }

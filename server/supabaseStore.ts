@@ -308,6 +308,12 @@ export async function getStoppages() {
   return rows.map((row) => row.data);
 }
 
+export async function getStoppage(id: string): Promise<Record<string, unknown> | undefined> {
+  const query = new URLSearchParams({ select: '*', id: `eq.${id}`, limit: '1' });
+  const rows = await request<StoppageRow[]>(`/stoppages?${query}`);
+  return rows?.[0]?.data;
+}
+
 export async function saveStoppage(
   record: Record<string, unknown> & { id: string; machineId: string; startTimestamp: number; startTime: string; date: string; createdAt: number },
   expectedActive: boolean

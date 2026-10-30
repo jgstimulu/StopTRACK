@@ -6,6 +6,8 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as supabaseStore from './server/supabaseStore';
 import * as loginThrottle from './server/loginThrottle';
+import { authorizeRecordChange } from './server/recordAuth';
+import { handleStoppageEdit } from './server/stoppageEditRoute';
 import {
   sanitizeActiveDowntime,
   sanitizeStoppageRecord,
@@ -91,8 +93,9 @@ const ADMIN_LOGIN_LIMIT_PER_IP = 10;
 const ADMIN_LOGIN_LIMIT_PER_EMAIL = 10;
 const OPERATOR_PIN_LIMIT_PER_OPERATOR = 5;
 const OPERATOR_PIN_LIMIT_PER_IP = 30; // folga para vários tablets atrás do mesmo IP
-const DELETE_PIN_LIMIT_PER_IP = 5;
-const DELETE_PIN_LIMIT_GLOBAL = 40;
+// Apagar e editar registos com PIN partilham os mesmos limites (testam PINs contra todos os operadores).
+const RECORD_PIN_LIMIT_PER_IP = 5;
+const RECORD_PIN_LIMIT_GLOBAL = 40;
 
 function rejectLocked(res: express.Response, lockedUntil: number, subject?: string) {
   const { message, retryAfterSeconds } = loginThrottle.lockedResponse(lockedUntil, subject);
@@ -746,45 +749,13 @@ app.delete('/api/stoppages/:id', async (req, res) => {
   const pinHeader = req.headers['x-deletion-pin'];
   const pinBody = req.body?.pin;
   const providedPin = (pinHeader || pinBody || '').toString().trim();
-  // O PIN é testado contra todos os operadores com permissão, por isso limita-se por IP
-  // e globalmente (este último cobre quem mude de IP a cada tentativa).
-  const deleteThrottleKeys = [`delete:ip:${req.ip || 'unknown'}`, 'delete:global'];
   try {
-    const session = await getSession(req);
-    const hasSessionAuthorization = session?.role === 'admin' ||
-      (session?.role === 'operator' && Boolean(session.canClose));
-
-    if (!hasSessionAuthorization && providedPin) {
-      const lockedUntil = await loginThrottle.getLockedUntil(deleteThrottleKeys);
-      if (lockedUntil > Date.now()) {
-        return rejectLocked(res, lockedUntil);
-      }
+    const auth = await authorizeStoppageChange(req, providedPin);
+    if (auth.status === 'locked') {
+      return rejectLocked(res, auth.lockedUntil);
     }
-
-    const operators = hasSessionAuthorization ? [] : await supabaseStore.getOperators();
-    const operatorPinValid = PIN_PATTERN.test(providedPin) && operators.some((operator) =>
-      operator.active &&
-      operator.canClose &&
-      operator.pinSalt &&
-      operator.pinHash &&
-      verifySecret(providedPin, operator.pinSalt, operator.pinHash)
-    );
-    const isAuthorized = hasSessionAuthorization || operatorPinValid;
-    if (!isAuthorized) {
-      // Só conta como tentativa quando foi realmente indicado um PIN.
-      if (providedPin) {
-        const lockedUntil = await loginThrottle.registerFailure([
-          { key: deleteThrottleKeys[0], limit: DELETE_PIN_LIMIT_PER_IP },
-          { key: deleteThrottleKeys[1], limit: DELETE_PIN_LIMIT_GLOBAL },
-        ]);
-        if (lockedUntil > Date.now()) {
-          return rejectLocked(res, lockedUntil);
-        }
-      }
+    if (auth.status === 'denied') {
       return res.status(401).json({ error: 'PIN de operador autorizado incorreto.' });
-    }
-    if (providedPin && !hasSessionAuthorization) {
-      await loginThrottle.clearFailures([deleteThrottleKeys[0]]);
     }
 
     const deletedCount = await supabaseStore.deleteStoppage(id);
@@ -793,6 +764,51 @@ app.delete('/api/stoppages/:id', async (req, res) => {
       id,
       deletedCount,
     });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+/**
+ * Autoriza alterar (apagar ou editar) um registo já gravado: sessão de administrador, sessão de
+ * operador com permissão de fechar, ou o PIN de um operador com essa permissão.
+ * As regras e os limites de tentativas estão em server/recordAuth.ts.
+ */
+async function authorizeStoppageChange(req: express.Request, providedPin: string) {
+  const session = await getSession(req);
+  return authorizeRecordChange({
+    session,
+    providedPin,
+    ip: req.ip || 'unknown',
+    getOperators: () => supabaseStore.getOperators(),
+    getOperatorName: async (operatorId) => (await supabaseStore.getOperator(operatorId))?.name,
+    verifyPin: (pin, operator) =>
+      PIN_PATTERN.test(pin) &&
+      Boolean(operator.pinSalt && operator.pinHash) &&
+      verifySecret(pin, operator.pinSalt as string, operator.pinHash as string),
+    limits: { perIp: RECORD_PIN_LIMIT_PER_IP, global: RECORD_PIN_LIMIT_GLOBAL },
+  });
+}
+
+// Editar um registo já gravado (tipo, prioridade, estado, descrição, etapas, ...).
+// Máquina, data, horas e duração não são editáveis (ver server/stoppageEdit.ts).
+app.put('/api/stoppages/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador inválido.' });
+  }
+
+  try {
+    const outcome = await handleStoppageEdit(id, req.body, {
+      authorize: (providedPin) => authorizeStoppageChange(req, providedPin),
+      getStoppage: (stoppageId) => supabaseStore.getStoppage(stoppageId),
+      saveStoppage: (record) => supabaseStore.saveStoppage(record, false),
+      now: () => Date.now(),
+    });
+    if (outcome.kind === 'locked') {
+      return rejectLocked(res, outcome.lockedUntil);
+    }
+    return res.status(outcome.status).json(outcome.body);
   } catch (error) {
     return respondWithStoreError(res, error);
   }
