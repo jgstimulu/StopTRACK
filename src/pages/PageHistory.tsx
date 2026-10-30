@@ -1019,6 +1019,7 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
         onSave={async (updatedRecord, pin) => {
           if (onUpdateRecord) {
             await onUpdateRecord(updatedRecord, pin);
+            setStoppageToEdit(null);
             setExportSuccessMessage(`Paragem da ${updatedRecord.machineId} (${updatedRecord.date} ${updatedRecord.startTime}) corrigida com sucesso!`);
             setTimeout(() => setExportSuccessMessage(null), 4000);
           }

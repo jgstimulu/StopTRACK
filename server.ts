@@ -771,18 +771,12 @@ app.put('/api/stoppages/:id', async (req, res) => {
       session?.role === 'admin' ||
       (session?.role === 'operator' && Boolean(session.canClose));
 
-    if (!hasSessionAuthorization && providedPin) {
+    if (providedPin) {
       const lockedUntil = await loginThrottle.getLockedUntil(editThrottleKeys);
       if (lockedUntil > Date.now()) {
         return rejectLocked(res, lockedUntil);
       }
-    }
-
-    const operators = hasSessionAuthorization ? [] : await supabaseStore.getOperators();
-    const hasOperatorsConfigured = operators.some(o => o.active && o.canClose && o.pinSalt && o.pinHash);
-
-    let isAuthorized = hasSessionAuthorization;
-    if (!isAuthorized && hasOperatorsConfigured) {
+      const operators = await supabaseStore.getOperators();
       const operatorPinValid =
         PIN_PATTERN.test(providedPin) &&
         operators.some((operator) =>
@@ -792,27 +786,16 @@ app.put('/api/stoppages/:id', async (req, res) => {
           operator.pinHash &&
           verifySecret(providedPin, operator.pinSalt, operator.pinHash)
         );
-      if (operatorPinValid) {
-        isAuthorized = true;
-      }
-    } else if (!isAuthorized && !hasOperatorsConfigured) {
-      isAuthorized = true;
-    }
-
-    if (!isAuthorized) {
-      if (providedPin) {
-        const lockedUntil = await loginThrottle.registerFailure([
+      if (!operatorPinValid && !hasSessionAuthorization) {
+        const locked = await loginThrottle.registerFailure([
           { key: editThrottleKeys[0], limit: DELETE_PIN_LIMIT_PER_IP },
           { key: editThrottleKeys[1], limit: DELETE_PIN_LIMIT_GLOBAL },
         ]);
-        if (lockedUntil > Date.now()) {
-          return rejectLocked(res, lockedUntil);
+        if (locked > Date.now()) {
+          return rejectLocked(res, locked);
         }
+        return res.status(401).json({ error: 'PIN de operador incorreto.' });
       }
-      return res.status(401).json({ error: 'PIN de operador autorizado ou sessão necessária para editar a paragem.' });
-    }
-
-    if (providedPin && !hasSessionAuthorization) {
       await loginThrottle.clearFailures([editThrottleKeys[0]]);
     }
 

@@ -431,12 +431,19 @@ export default function App() {
     cloudStateVersionRef.current += 1;
     try {
       const saved = await apiUpdateStoppage(updated, pin);
-      const updatedRecords = records.map((r) => (r.id === saved.id ? saved : r));
-      setRecords(updatedRecords);
-      localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updatedRecords));
+      setRecords((prev) => {
+        const next = prev.map((r) => (r.id === saved.id ? saved : r));
+        try {
+          localStorage.setItem('manutrack_stoppages_history', JSON.stringify(next));
+        } catch {
+          // Ignore
+        }
+        return next;
+      });
       setToastMessage(`Paragem da ${saved.machineId} corrigida e guardada na nuvem com sucesso!`);
     } finally {
       isSavingStoppageRef.current = false;
+      void syncWithCloud();
     }
   };
 

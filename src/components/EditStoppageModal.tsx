@@ -16,11 +16,11 @@ import {
   CheckCircle2,
   Activity,
   Flame,
-  ShieldCheck,
   Check,
   RotateCcw,
   Pencil,
   Power,
+  Edit3,
 } from 'lucide-react';
 import {
   StoppageRecord,
@@ -39,7 +39,6 @@ import {
   getLocalYMD,
 } from '../utils/formatters';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
-import { getAdminToken, getOperatorToken } from '../services/api';
 
 interface EditStoppageModalProps {
   isOpen: boolean;
@@ -70,28 +69,47 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
   const [stoppageType, setStoppageType] = useState<string>('Avaria Mecânica');
   const [initiatedBy, setInitiatedBy] = useState<string>('');
   const [closedBy, setClosedBy] = useState<string>('');
+  const [isCustomInitiator, setIsCustomInitiator] = useState<boolean>(false);
+  const [isCustomCloser, setIsCustomCloser] = useState<boolean>(false);
   const [stoppageDescription, setStoppageDescription] = useState<string>('');
   const [actionsTaken, setActionsTaken] = useState<string>('');
   const [otherObservations, setOtherObservations] = useState<string>('');
   const [isDecomposingStages, setIsDecomposingStages] = useState<boolean>(false);
   const [stages, setStages] = useState<StoppageStage[]>([]);
 
-  // Authentication & Security PIN
-  const [authPin, setAuthPin] = useState<string>('');
-  const [selectedCloserId, setSelectedCloserId] = useState<string>('');
-  const [requiresPinInput, setRequiresPinInput] = useState<boolean>(false);
-
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const pinInputRef = useRef<HTMLInputElement>(null);
+  const formRef = useRef<HTMLDivElement>(null);
 
-  const activeOps = useMemo(() => availableOperators.filter((o) => o.active), [availableOperators]);
-  const closerOps = useMemo(() => activeOps.filter((o) => o.canClose), [activeOps]);
+  const activeOps = useMemo(
+    () => availableOperators.filter((o) => o.active),
+    [availableOperators]
+  );
 
-  // Determine if user is already logged in with admin or operator session
-  const hasActiveSession = useMemo(() => {
-    return Boolean(getAdminToken() || getOperatorToken());
-  }, []);
+  // Combined types list: default/configured types + current record stoppageType
+  const typesList = useMemo(() => {
+    const list: string[] = [];
+    availableStoppageTypes.forEach((st) => {
+      if (st.name && !list.includes(st.name)) list.push(st.name);
+    });
+    if (record?.stoppageType && !list.includes(record.stoppageType)) {
+      list.push(record.stoppageType);
+    }
+    return list;
+  }, [availableStoppageTypes, record]);
+
+  // Combined operator names list: active operators + current record names
+  const operatorNamesList = useMemo(() => {
+    const names = new Set<string>();
+    activeOps.forEach((op) => names.add(op.name));
+    if (record?.initiatedBy && record.initiatedBy.trim()) {
+      names.add(record.initiatedBy.trim());
+    }
+    if (record?.closedBy && record.closedBy.trim()) {
+      names.add(record.closedBy.trim());
+    }
+    return Array.from(names);
+  }, [activeOps, record]);
 
   // Populate form fields whenever record changes or modal opens
   useEffect(() => {
@@ -115,6 +133,8 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
       setStoppageType(record.stoppageType || 'Avaria Mecânica');
       setInitiatedBy(record.initiatedBy || '');
       setClosedBy(record.closedBy || '');
+      setIsCustomInitiator(!activeOps.some((op) => op.name === record.initiatedBy));
+      setIsCustomCloser(!activeOps.some((op) => op.name === record.closedBy));
       setStoppageDescription(record.stoppageDescription || '');
       setActionsTaken(record.actionsTaken || '');
       setOtherObservations(record.otherObservations || '');
@@ -123,18 +143,10 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
       setStages(initialStages);
       setIsDecomposingStages(initialStages.length > 0);
 
-      setAuthPin('');
       setErrors({});
       setIsSubmitting(false);
-
-      // If no admin/operator session is active and there are closer operators with PIN configured, require PIN input
-      const needsPin = !hasActiveSession && closerOps.length > 0;
-      setRequiresPinInput(needsPin);
-      if (needsPin && closerOps.length > 0) {
-        setSelectedCloserId(closerOps[0].id);
-      }
     }
-  }, [isOpen, record, hasActiveSession, closerOps]);
+  }, [isOpen, record, activeOps]);
 
   if (!isOpen || !record) return null;
 
@@ -210,16 +222,25 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
     if (!stoppageType.trim()) {
       errs.stoppageType = 'Selecione o tipo de paragem.';
     }
-    if (requiresPinInput && !authPin.trim()) {
-      errs.authPin = 'Introduza o PIN de autorização para validar a correção.';
-    }
 
     setErrors(errs);
-    return Object.keys(errs).length === 0;
+
+    if (Object.keys(errs).length > 0) {
+      const firstKey = Object.keys(errs)[0];
+      const el = document.getElementById(`field-${firstKey}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      return false;
+    }
+
+    return true;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (isSubmitting) return;
+
     if (!validate()) {
       playIndustrialClick();
       return;
@@ -250,18 +271,22 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
 
       const formattedPtDate = formatDatePt(startDateObj);
 
+      // Preserve seconds from record if existing, otherwise append 00
+      const cleanStartTime = startTime.length === 5 ? `${startTime}:00` : startTime;
+      const cleanEndTime = endTime.length === 5 ? `${endTime}:00` : endTime;
+
       const updatedRecord: StoppageRecord = {
         ...record,
         machineId: selectedMachine.code,
         machineName: selectedMachine.name,
         date: formattedPtDate,
-        startTime: `${startTime}:00`,
-        endTime: `${endTime}:00`,
+        startTime: cleanStartTime,
+        endTime: cleanEndTime,
         startTimestamp: calculatedStartTimestamp,
         endTimestamp: calculatedEndTimestamp,
         durationMs,
         durationFormatted,
-        shift,
+        shift: shift.trim(),
         priority,
         status,
         machineStopped,
@@ -274,13 +299,17 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
         stages: isDecomposingStages && stages.length > 0 ? stages : undefined,
       };
 
-      await onSave(updatedRecord, requiresPinInput ? authPin.trim() : undefined);
+      await onSave(updatedRecord);
       playSuccessChime();
       onClose();
     } catch (err: any) {
       setIsSubmitting(false);
-      setErrors({ form: err.message || 'Falha ao gravar correções da paragem.' });
+      setErrors({ form: err.message || 'Falha ao gravar correções da paragem na base de dados central.' });
       playIndustrialClick();
+      // Scroll to bottom or top where error is visible
+      if (formRef.current) {
+        formRef.current.scrollTop = 0;
+      }
     }
   };
 
@@ -303,7 +332,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">
-                Correção retroativa de dados e etapas após o fecho
+                Correção retroativa de máquina, datas, avaria, operadores e etapas
               </p>
             </div>
           </div>
@@ -319,11 +348,15 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
         </div>
 
         {/* Scrollable Form Body */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div ref={formRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Top Error Alert if API error */}
           {errors.form && (
-            <div className="rounded-xl border border-rose-500/50 bg-rose-950/60 p-3 text-xs font-semibold text-rose-200 flex items-center gap-2 animate-shake">
-              <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
-              <span>{errors.form}</span>
+            <div className="rounded-xl border border-rose-500/60 bg-rose-950/80 p-3.5 text-xs font-semibold text-rose-200 flex items-start gap-2.5 shadow-lg animate-shake">
+              <AlertCircle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-rose-300">Erro ao gravar correções:</p>
+                <p className="text-slate-300 mt-0.5">{errors.form}</p>
+              </div>
             </div>
           )}
 
@@ -338,7 +371,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
               {/* Machine selection */}
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  Máquina
+                  Máquina <span className="text-rose-400">*</span>
                 </label>
                 <select
                   value={machineId}
@@ -357,20 +390,27 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
               </div>
 
               {/* Date */}
-              <div>
+              <div id="field-date">
                 <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  Data (AAAA-MM-DD)
+                  Data (AAAA-MM-DD) <span className="text-rose-400">*</span>
                 </label>
                 <div className="relative">
                   <Calendar className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-400" />
                   <input
                     type="date"
                     value={date}
-                    onChange={(e) => setDate(e.target.value)}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 pl-8 pr-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
+                    onChange={(e) => {
+                      setDate(e.target.value);
+                      if (errors.date) setErrors((prev) => ({ ...prev, date: '' }));
+                    }}
+                    className={`w-full rounded-xl border pl-8 pr-3 py-2 text-xs font-bold text-white focus:outline-none ${
+                      errors.date
+                        ? 'border-rose-500 bg-rose-950/30'
+                        : 'border-slate-700 bg-slate-800 focus:border-amber-400'
+                    }`}
                   />
                 </div>
-                {errors.date && <p className="text-[10px] text-rose-400 mt-1">{errors.date}</p>}
+                {errors.date && <p className="text-[10px] text-rose-400 mt-1 font-semibold">{errors.date}</p>}
               </div>
 
               {/* Shift */}
@@ -395,36 +435,50 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
 
             {/* Time row */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-              <div>
+              <div id="field-startTime">
                 <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  Hora de Início (HH:MM)
+                  Hora de Início (HH:MM) <span className="text-rose-400">*</span>
                 </label>
                 <div className="relative">
                   <Clock className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-400" />
                   <input
                     type="time"
                     value={startTime}
-                    onChange={(e) => handleTimeChange(e.target.value, endTime)}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 pl-8 pr-3 py-2 text-xs font-mono font-bold text-white focus:border-amber-400 focus:outline-none"
+                    onChange={(e) => {
+                      handleTimeChange(e.target.value, endTime);
+                      if (errors.startTime) setErrors((prev) => ({ ...prev, startTime: '' }));
+                    }}
+                    className={`w-full rounded-xl border pl-8 pr-3 py-2 text-xs font-mono font-bold text-white focus:outline-none ${
+                      errors.startTime
+                        ? 'border-rose-500 bg-rose-950/30'
+                        : 'border-slate-700 bg-slate-800 focus:border-amber-400'
+                    }`}
                   />
                 </div>
-                {errors.startTime && <p className="text-[10px] text-rose-400 mt-1">{errors.startTime}</p>}
+                {errors.startTime && <p className="text-[10px] text-rose-400 mt-1 font-semibold">{errors.startTime}</p>}
               </div>
 
-              <div>
+              <div id="field-endTime">
                 <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  Hora de Fim (HH:MM)
+                  Hora de Fim (HH:MM) <span className="text-rose-400">*</span>
                 </label>
                 <div className="relative">
                   <Clock className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-400" />
                   <input
                     type="time"
                     value={endTime}
-                    onChange={(e) => handleTimeChange(startTime, e.target.value)}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 pl-8 pr-3 py-2 text-xs font-mono font-bold text-white focus:border-amber-400 focus:outline-none"
+                    onChange={(e) => {
+                      handleTimeChange(startTime, e.target.value);
+                      if (errors.endTime) setErrors((prev) => ({ ...prev, endTime: '' }));
+                    }}
+                    className={`w-full rounded-xl border pl-8 pr-3 py-2 text-xs font-mono font-bold text-white focus:outline-none ${
+                      errors.endTime
+                        ? 'border-rose-500 bg-rose-950/30'
+                        : 'border-slate-700 bg-slate-800 focus:border-amber-400'
+                    }`}
                   />
                 </div>
-                {errors.endTime && <p className="text-[10px] text-rose-400 mt-1">{errors.endTime}</p>}
+                {errors.endTime && <p className="text-[10px] text-rose-400 mt-1 font-semibold">{errors.endTime}</p>}
               </div>
 
               {/* Calculated Duration Display */}
@@ -472,24 +526,28 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {/* Stoppage Type */}
-              <div>
+              <div id="field-stoppageType">
                 <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  Tipo de Paragem
+                  Tipo de Paragem <span className="text-rose-400">*</span>
                 </label>
                 <select
                   value={stoppageType}
                   onChange={(e) => {
                     playIndustrialClick();
                     setStoppageType(e.target.value);
+                    if (errors.stoppageType) setErrors((prev) => ({ ...prev, stoppageType: '' }));
                   }}
                   className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
                 >
-                  {availableStoppageTypes.map((st) => (
-                    <option key={st.id} value={st.name}>
-                      {st.name}
+                  {typesList.map((typeName) => (
+                    <option key={typeName} value={typeName}>
+                      {typeName}
                     </option>
                   ))}
                 </select>
+                {errors.stoppageType && (
+                  <p className="text-[10px] text-rose-400 mt-1 font-semibold">{errors.stoppageType}</p>
+                )}
               </div>
 
               {/* Machine Stopped Toggle */}
@@ -506,7 +564,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                     }}
                     className={`flex items-center justify-center gap-1.5 py-2 rounded-xl border text-xs font-bold transition-all ${
                       machineStopped
-                        ? 'border-rose-500 bg-rose-500/20 text-rose-300'
+                        ? 'border-rose-500 bg-rose-500/20 text-rose-300 ring-1 ring-rose-500/40'
                         : 'border-slate-700 bg-slate-800 text-slate-400 hover:bg-slate-700'
                     }`}
                   >
@@ -521,7 +579,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                     }}
                     className={`flex items-center justify-center gap-1.5 py-2 rounded-xl border text-xs font-bold transition-all ${
                       !machineStopped
-                        ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
+                        ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40'
                         : 'border-slate-700 bg-slate-800 text-slate-400 hover:bg-slate-700'
                     }`}
                   >
@@ -552,12 +610,12 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                         className={`py-1.5 px-1 rounded-lg border text-[10px] font-bold text-center transition-all ${
                           isSel
                             ? p === 'Crítica'
-                              ? 'border-rose-500 bg-rose-500/25 text-rose-200'
+                              ? 'border-rose-500 bg-rose-500/25 text-rose-200 ring-1 ring-rose-500/50'
                               : p === 'Alta'
-                              ? 'border-amber-500 bg-amber-500/25 text-amber-200'
+                              ? 'border-amber-500 bg-amber-500/25 text-amber-200 ring-1 ring-amber-500/50'
                               : p === 'Média'
-                              ? 'border-sky-500 bg-sky-500/25 text-sky-200'
-                              : 'border-emerald-500 bg-emerald-500/25 text-emerald-200'
+                              ? 'border-sky-500 bg-sky-500/25 text-sky-200 ring-1 ring-sky-500/50'
+                              : 'border-emerald-500 bg-emerald-500/25 text-emerald-200 ring-1 ring-emerald-500/50'
                             : 'border-slate-700 bg-slate-800 text-slate-400 hover:bg-slate-700'
                         }`}
                       >
@@ -586,10 +644,10 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                         className={`py-1.5 px-1 rounded-lg border text-[10px] font-bold text-center transition-all ${
                           isSel
                             ? s === 'Resolvido'
-                              ? 'border-emerald-500 bg-emerald-500/25 text-emerald-200'
+                              ? 'border-emerald-500 bg-emerald-500/25 text-emerald-200 ring-1 ring-emerald-500/50'
                               : s === 'Em Decorrer'
-                              ? 'border-sky-500 bg-sky-500/25 text-sky-200'
-                              : 'border-amber-500 bg-amber-500/25 text-amber-200'
+                              ? 'border-sky-500 bg-sky-500/25 text-sky-200 ring-1 ring-sky-500/50'
+                              : 'border-amber-500 bg-amber-500/25 text-amber-200 ring-1 ring-amber-500/50'
                             : 'border-slate-700 bg-slate-800 text-slate-400 hover:bg-slate-700'
                         }`}
                       >
@@ -610,65 +668,115 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
             </h4>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  Iniciado por
-                </label>
-                {activeOps.length > 0 ? (
-                  <select
-                    value={initiatedBy}
-                    onChange={(e) => setInitiatedBy(e.target.value)}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
+              {/* Initiated By */}
+              <div id="field-initiatedBy">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-bold text-slate-400">
+                    Iniciado por <span className="text-rose-400">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsCustomInitiator(!isCustomInitiator)}
+                    className="text-[10px] text-amber-400 hover:underline"
                   >
-                    <option value="">Selecione o operador...</option>
-                    {activeOps.map((op) => (
-                      <option key={op.id} value={op.name}>
-                        {op.name} ({op.role})
-                      </option>
-                    ))}
-                  </select>
-                ) : (
+                    {isCustomInitiator ? 'Selecionar da lista' : 'Digitar nome'}
+                  </button>
+                </div>
+
+                {isCustomInitiator ? (
                   <input
                     type="text"
                     value={initiatedBy}
-                    onChange={(e) => setInitiatedBy(e.target.value)}
-                    placeholder="Nome do operador"
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
+                    onChange={(e) => {
+                      setInitiatedBy(e.target.value);
+                      if (errors.initiatedBy) setErrors((prev) => ({ ...prev, initiatedBy: '' }));
+                    }}
+                    placeholder="Nome do operador que iniciou..."
+                    className={`w-full rounded-xl border px-3 py-2 text-xs font-bold text-white focus:outline-none ${
+                      errors.initiatedBy
+                        ? 'border-rose-500 bg-rose-950/30'
+                        : 'border-slate-700 bg-slate-800 focus:border-amber-400'
+                    }`}
                   />
+                ) : (
+                  <select
+                    value={initiatedBy}
+                    onChange={(e) => {
+                      setInitiatedBy(e.target.value);
+                      if (errors.initiatedBy) setErrors((prev) => ({ ...prev, initiatedBy: '' }));
+                    }}
+                    className={`w-full rounded-xl border px-3 py-2 text-xs font-bold text-white focus:outline-none ${
+                      errors.initiatedBy
+                        ? 'border-rose-500 bg-rose-950/30'
+                        : 'border-slate-700 bg-slate-800 focus:border-amber-400'
+                    }`}
+                  >
+                    <option value="">Selecione o operador...</option>
+                    {operatorNamesList.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
                 )}
                 {errors.initiatedBy && (
-                  <p className="text-[10px] text-rose-400 mt-1">{errors.initiatedBy}</p>
+                  <p className="text-[10px] text-rose-400 mt-1 font-semibold">{errors.initiatedBy}</p>
                 )}
               </div>
 
-              <div>
-                <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  Fechado por
-                </label>
-                {activeOps.length > 0 ? (
-                  <select
-                    value={closedBy}
-                    onChange={(e) => setClosedBy(e.target.value)}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
+              {/* Closed By */}
+              <div id="field-closedBy">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-bold text-slate-400">
+                    Fechado / Corrigido por <span className="text-rose-400">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsCustomCloser(!isCustomCloser)}
+                    className="text-[10px] text-amber-400 hover:underline"
                   >
-                    <option value="">Selecione quem fechou...</option>
-                    {activeOps.map((op) => (
-                      <option key={op.id} value={op.name}>
-                        {op.name} ({op.role})
-                      </option>
-                    ))}
-                  </select>
-                ) : (
+                    {isCustomCloser ? 'Selecionar da lista' : 'Digitar nome'}
+                  </button>
+                </div>
+
+                {isCustomCloser ? (
                   <input
                     type="text"
                     value={closedBy}
-                    onChange={(e) => setClosedBy(e.target.value)}
-                    placeholder="Nome do técnico/fecho"
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
+                    onChange={(e) => {
+                      setClosedBy(e.target.value);
+                      if (errors.closedBy) setErrors((prev) => ({ ...prev, closedBy: '' }));
+                    }}
+                    placeholder="Nome de quem fechou ou corrigiu..."
+                    className={`w-full rounded-xl border px-3 py-2 text-xs font-bold text-white focus:outline-none ${
+                      errors.closedBy
+                        ? 'border-rose-500 bg-rose-950/30'
+                        : 'border-slate-700 bg-slate-800 focus:border-amber-400'
+                    }`}
                   />
+                ) : (
+                  <select
+                    value={closedBy}
+                    onChange={(e) => {
+                      setClosedBy(e.target.value);
+                      if (errors.closedBy) setErrors((prev) => ({ ...prev, closedBy: '' }));
+                    }}
+                    className={`w-full rounded-xl border px-3 py-2 text-xs font-bold text-white focus:outline-none ${
+                      errors.closedBy
+                        ? 'border-rose-500 bg-rose-950/30'
+                        : 'border-slate-700 bg-slate-800 focus:border-amber-400'
+                    }`}
+                  >
+                    <option value="">Selecione quem fechou...</option>
+                    {operatorNamesList.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
                 )}
                 {errors.closedBy && (
-                  <p className="text-[10px] text-rose-400 mt-1">{errors.closedBy}</p>
+                  <p className="text-[10px] text-rose-400 mt-1 font-semibold">{errors.closedBy}</p>
                 )}
               </div>
             </div>
@@ -683,7 +791,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
 
             <div>
               <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                Descrição da Paragem
+                Descrição da Paragem (Motivo / Causa)
               </label>
               <textarea
                 value={stoppageDescription}
@@ -756,87 +864,51 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
               />
             )}
           </div>
+        </div>
 
-          {/* Section 6: PIN Authorization (if applicable) */}
-          {requiresPinInput && (
-            <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-3.5 space-y-2.5">
+        {/* Modal Footer with Validation Notice & Action Buttons */}
+        <div className="border-t border-slate-800 bg-slate-800/95 p-3 sm:px-4 shrink-0 space-y-2.5">
+          {/* Validation Errors Notice banner right above the action button */}
+          {Object.keys(errors).length > 0 && (
+            <div className="rounded-xl border border-rose-500/60 bg-rose-950/90 p-2.5 text-xs text-rose-200 shadow-lg flex items-center justify-between gap-2 animate-in fade-in">
               <div className="flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4 text-amber-400" />
-                <h4 className="text-xs font-bold text-white uppercase tracking-wide">
-                  Autorização de Alteração
-                </h4>
-              </div>
-              <p className="text-[11px] text-slate-300">
-                Por motivos de auditoria, confirme com o PIN de um operador autorizado ou administrador:
-              </p>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 mb-1">
-                    Operador com Permissão
-                  </label>
-                  <select
-                    value={selectedCloserId}
-                    onChange={(e) => setSelectedCloserId(e.target.value)}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
-                  >
-                    {closerOps.map((op) => (
-                      <option key={op.id} value={op.id}>
-                        {op.name} ({op.role})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 mb-1">
-                    PIN Numérico (4 a 8 dígitos)
-                  </label>
-                  <input
-                    ref={pinInputRef}
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={8}
-                    value={authPin}
-                    onChange={(e) => setAuthPin(e.target.value)}
-                    placeholder="PIN do operador..."
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-mono font-bold text-white focus:border-amber-400 focus:outline-none"
-                  />
-                  {errors.authPin && (
-                    <p className="text-[10px] text-rose-400 mt-1">{errors.authPin}</p>
-                  )}
-                </div>
+                <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+                <span className="font-bold text-rose-300">
+                  {errors.form || 'Atenção: Por favor preencha os campos obrigatórios assinalados.'}
+                </span>
               </div>
             </div>
           )}
-        </form>
 
-        {/* Modal Footer */}
-        <div className="flex items-center justify-between border-t border-slate-800 bg-slate-800/90 p-3 sm:px-4 shrink-0 gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isSubmitting}
-            className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-xs font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition-all active:scale-95"
-          >
-            Cancelar
-          </button>
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSubmitting}
+              className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-xs font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition-all active:scale-95"
+            >
+              Cancelar
+            </button>
 
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={isSubmitting}
-            className="flex items-center gap-2 rounded-xl border border-amber-500 bg-amber-500 px-5 py-2.5 text-xs font-black uppercase tracking-wider text-slate-950 hover:bg-amber-400 active:scale-95 transition-all shadow-lg shadow-amber-500/20 disabled:opacity-50"
-          >
-            {isSubmitting ? (
-              <span>A guardar correções...</span>
-            ) : (
-              <>
-                <Save className="h-4 w-4" />
-                <span>Gravar Alterações</span>
-              </>
-            )}
-          </button>
+            <button
+              type="button"
+              onClick={() => handleSubmit()}
+              disabled={isSubmitting}
+              className="flex items-center gap-2 rounded-xl border border-amber-500 bg-amber-500 px-6 py-2.5 text-xs font-black uppercase tracking-wider text-slate-950 hover:bg-amber-400 active:scale-95 transition-all shadow-lg shadow-amber-500/20 disabled:opacity-50"
+            >
+              {isSubmitting ? (
+                <>
+                  <RotateCcw className="h-4 w-4 animate-spin" />
+                  <span>A gravar alterações...</span>
+                </>
+              ) : (
+                <>
+                  <Save className="h-4 w-4" />
+                  <span>Gravar Alterações</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>
