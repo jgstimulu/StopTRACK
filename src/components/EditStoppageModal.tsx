@@ -85,6 +85,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const formRef = useRef<HTMLDivElement>(null);
+  const loadedRecordIdRef = useRef<string | null>(null);
 
   const activeOps = useMemo(
     () => availableOperators.filter((o) => o.active),
@@ -116,43 +117,51 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
     return Array.from(names);
   }, [activeOps, record]);
 
-  // Populate form fields whenever record changes or modal opens
+  // Populate form fields ONLY when opening or when a new record is loaded (never while actively editing)
   useEffect(() => {
-    if (isOpen && record) {
-      setMachineId(record.machineId || 'F01');
-      const ymd = normalizeDateToYMD(record.date, record.startTimestamp) || getLocalYMD();
-      setDate(ymd);
-
-      const sTime = record.startTime ? record.startTime.slice(0, 5) : '08:00';
-      const eTime = record.endTime ? record.endTime.slice(0, 5) : '09:00';
-      setStartTime(sTime);
-      setEndTime(eTime);
-
-      const mins = Math.max(1, Math.round((record.durationMs || 3600000) / 60000));
-      setDurationMinutes(mins);
-
-      setShift(record.shift || '1º Turno');
-      setPriority((record.priority as StoppagePriority) || 'Média');
-      setStatus((record.status as StoppageStatus) || 'Resolvido');
-      setMachineStopped(record.machineStopped !== false);
-      setStoppageType(record.stoppageType || 'Avaria Mecânica');
-      setInitiatedBy(record.initiatedBy || '');
-      setClosedBy(record.closedBy || '');
-      setIsCustomInitiator(!activeOps.some((op) => op.name === record.initiatedBy));
-      setIsCustomCloser(!activeOps.some((op) => op.name === record.closedBy));
-      setStoppageDescription(record.stoppageDescription || '');
-      setActionsTaken(record.actionsTaken || '');
-      setOtherObservations(record.otherObservations || '');
-
-      const initialStages = Array.isArray(record.stages) ? record.stages : [];
-      setStages(initialStages);
-      setIsDecomposingStages(initialStages.length > 0);
-
-      setErrors({});
-      setIsSubmitting(false);
-      setPin(initialPin || '');
+    if (!isOpen || !record) {
+      loadedRecordIdRef.current = null;
+      return;
     }
-  }, [isOpen, record, activeOps, initialPin]);
+
+    if (loadedRecordIdRef.current === record.id) {
+      return;
+    }
+    loadedRecordIdRef.current = record.id;
+
+    setMachineId(record.machineId || 'F01');
+    const ymd = normalizeDateToYMD(record.date, record.startTimestamp) || getLocalYMD();
+    setDate(ymd);
+
+    const sTime = record.startTime ? record.startTime.slice(0, 5) : '08:00';
+    const eTime = record.endTime ? record.endTime.slice(0, 5) : '09:00';
+    setStartTime(sTime);
+    setEndTime(eTime);
+
+    const mins = Math.max(1, Math.round((record.durationMs || 3600000) / 60000));
+    setDurationMinutes(mins);
+
+    setShift(record.shift || '1º Turno');
+    setPriority((record.priority as StoppagePriority) || 'Média');
+    setStatus((record.status as StoppageStatus) || 'Resolvido');
+    setMachineStopped(record.machineStopped !== false);
+    setStoppageType(record.stoppageType || 'Avaria Mecânica');
+    setInitiatedBy(record.initiatedBy || '');
+    setClosedBy(record.closedBy || '');
+    setIsCustomInitiator(!availableOperators.some((op) => op.active && op.name === record.initiatedBy));
+    setIsCustomCloser(!availableOperators.some((op) => op.active && op.name === record.closedBy));
+    setStoppageDescription(record.stoppageDescription || '');
+    setActionsTaken(record.actionsTaken || '');
+    setOtherObservations(record.otherObservations || '');
+
+    const initialStages = Array.isArray(record.stages) ? record.stages : [];
+    setStages(initialStages);
+    setIsDecomposingStages(initialStages.length > 0);
+
+    setErrors({});
+    setIsSubmitting(false);
+    setPin(initialPin || '');
+  }, [isOpen, record?.id, initialPin]);
 
   if (!isOpen || !record) return null;
 

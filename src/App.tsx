@@ -131,15 +131,21 @@ export default function App() {
       if (isSavingStoppageRef.current || syncVersion !== cloudStateVersionRef.current) return;
       setIsBackendConnected(true);
 
-      // 1. Sync Operators with local merge
+      // 1. Sync Operators with local merge (only trigger re-render if actually changed)
       if (Array.isArray(state.operators)) {
-        setOperators(state.operators);
+        setOperators((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(state.operators)) return prev;
+          return state.operators;
+        });
       }
 
-      // 2. Sync Stoppage Types
+      // 2. Sync Stoppage Types (only trigger re-render if actually changed)
       if (Array.isArray(state.stoppageTypes)) {
-        setStoppageTypes(state.stoppageTypes);
-        localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(state.stoppageTypes));
+        setStoppageTypes((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(state.stoppageTypes)) return prev;
+          localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(state.stoppageTypes));
+          return state.stoppageTypes;
+        });
       }
 
       // 3. Sync Active Downtimes (merge running timers)
