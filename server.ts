@@ -737,6 +737,50 @@ app.post('/api/stoppages', async (req, res) => {
   }
 });
 
+async function verifyAuthorizationPin(providedPin: string): Promise<boolean> {
+  if (!providedPin || typeof providedPin !== 'string') return false;
+  const pin = providedPin.trim();
+  if (pin.length < 4 || pin.length > 256) return false;
+
+  // 1. Check operator PINs
+  try {
+    const operators = await supabaseStore.getOperators();
+    const operatorPinValid =
+      PIN_PATTERN.test(pin) &&
+      operators.some(
+        (operator) =>
+          operator.active &&
+          operator.canClose &&
+          operator.pinSalt &&
+          operator.pinHash &&
+          verifySecret(pin, operator.pinSalt, operator.pinHash)
+      );
+    if (operatorPinValid) return true;
+
+    // Check if initial default PIN 2026 is allowed when no operator with PIN is configured
+    const hasAnyOperatorWithPin = operators.some(
+      (o) => o.active && o.canClose && o.pinSalt && o.pinHash
+    );
+    if (!hasAnyOperatorWithPin && pin === '2026') {
+      return true;
+    }
+  } catch (err) {
+    console.error('Error fetching operators for PIN verification:', err);
+  }
+
+  // 2. Check Admin credentials
+  try {
+    const adminCreds = await getOrInitializeAdminCredentials();
+    if (adminCreds && verifyAdminSecret(pin, adminCreds)) {
+      return true;
+    }
+  } catch {
+    // Ignore error
+  }
+
+  return false;
+}
+
 app.put('/api/stoppages/:id', async (req, res) => {
   const { id } = req.params;
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
@@ -771,22 +815,20 @@ app.put('/api/stoppages/:id', async (req, res) => {
       session?.role === 'admin' ||
       (session?.role === 'operator' && Boolean(session.canClose));
 
-    if (providedPin) {
+    // Exigir estritamente introdução de PIN quando não existir uma sessão de administrador ativa
+    if (!hasSessionAuthorization && !providedPin) {
+      return res.status(401).json({
+        error: 'É obrigatório introduzir o PIN de autorização para alterar ou corrigir a paragem.',
+      });
+    }
+
+    if (providedPin && !hasSessionAuthorization) {
       const lockedUntil = await loginThrottle.getLockedUntil(editThrottleKeys);
       if (lockedUntil > Date.now()) {
         return rejectLocked(res, lockedUntil);
       }
-      const operators = await supabaseStore.getOperators();
-      const operatorPinValid =
-        PIN_PATTERN.test(providedPin) &&
-        operators.some((operator) =>
-          operator.active &&
-          operator.canClose &&
-          operator.pinSalt &&
-          operator.pinHash &&
-          verifySecret(providedPin, operator.pinSalt, operator.pinHash)
-        );
-      if (!operatorPinValid && !hasSessionAuthorization) {
+      const isPinValid = await verifyAuthorizationPin(providedPin);
+      if (!isPinValid) {
         const locked = await loginThrottle.registerFailure([
           { key: editThrottleKeys[0], limit: DELETE_PIN_LIMIT_PER_IP },
           { key: editThrottleKeys[1], limit: DELETE_PIN_LIMIT_GLOBAL },
@@ -794,7 +836,7 @@ app.put('/api/stoppages/:id', async (req, res) => {
         if (locked > Date.now()) {
           return rejectLocked(res, locked);
         }
-        return res.status(401).json({ error: 'PIN de operador incorreto.' });
+        return res.status(401).json({ error: 'PIN de autorização incorreto.' });
       }
       await loginThrottle.clearFailures([editThrottleKeys[0]]);
     }
@@ -809,7 +851,7 @@ app.put('/api/stoppages/:id', async (req, res) => {
       shift: sanitized.record.shift || computeShift(sanitized.record.startTimestamp, sanitized.record.startTime),
     };
 
-    const result = await supabaseStore.saveStoppage(record, false);
+    const result = await supabaseStore.updateStoppage(id, record);
     if (!result?.success) {
       return res.status(409).json({
         error: typeof result?.error === 'string' ? result.error : 'Não foi possível atualizar a paragem.',
@@ -828,47 +870,35 @@ app.delete('/api/stoppages/:id', async (req, res) => {
     return res.status(400).json({ error: 'Identificador inválido.' });
   }
 
-  const pinHeader = req.headers['x-deletion-pin'];
+  const pinHeader = req.headers['x-deletion-pin'] || req.headers['x-operator-pin'];
   const pinBody = req.body?.pin;
   const providedPin = (pinHeader || pinBody || '').toString().trim();
-  // O PIN é testado contra todos os operadores com permissão, por isso limita-se por IP
-  // e globalmente (este último cobre quem mude de IP a cada tentativa).
   const deleteThrottleKeys = [`delete:ip:${req.ip || 'unknown'}`, 'delete:global'];
   try {
     const session = await getSession(req);
     const hasSessionAuthorization = session?.role === 'admin' ||
       (session?.role === 'operator' && Boolean(session.canClose));
 
+    if (!hasSessionAuthorization && !providedPin) {
+      return res.status(401).json({ error: 'PIN de segurança obrigatório para remover a paragem.' });
+    }
+
     if (!hasSessionAuthorization && providedPin) {
       const lockedUntil = await loginThrottle.getLockedUntil(deleteThrottleKeys);
       if (lockedUntil > Date.now()) {
         return rejectLocked(res, lockedUntil);
       }
-    }
-
-    const operators = hasSessionAuthorization ? [] : await supabaseStore.getOperators();
-    const operatorPinValid = PIN_PATTERN.test(providedPin) && operators.some((operator) =>
-      operator.active &&
-      operator.canClose &&
-      operator.pinSalt &&
-      operator.pinHash &&
-      verifySecret(providedPin, operator.pinSalt, operator.pinHash)
-    );
-    const isAuthorized = hasSessionAuthorization || operatorPinValid;
-    if (!isAuthorized) {
-      // Só conta como tentativa quando foi realmente indicado um PIN.
-      if (providedPin) {
-        const lockedUntil = await loginThrottle.registerFailure([
+      const isPinValid = await verifyAuthorizationPin(providedPin);
+      if (!isPinValid) {
+        const locked = await loginThrottle.registerFailure([
           { key: deleteThrottleKeys[0], limit: DELETE_PIN_LIMIT_PER_IP },
           { key: deleteThrottleKeys[1], limit: DELETE_PIN_LIMIT_GLOBAL },
         ]);
-        if (lockedUntil > Date.now()) {
-          return rejectLocked(res, lockedUntil);
+        if (locked > Date.now()) {
+          return rejectLocked(res, locked);
         }
+        return res.status(401).json({ error: 'PIN de operador autorizado incorreto.' });
       }
-      return res.status(401).json({ error: 'PIN de operador autorizado incorreto.' });
-    }
-    if (providedPin && !hasSessionAuthorization) {
       await loginThrottle.clearFailures([deleteThrottleKeys[0]]);
     }
 

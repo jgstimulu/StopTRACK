@@ -430,7 +430,16 @@ export default function App() {
     isSavingStoppageRef.current = true;
     cloudStateVersionRef.current += 1;
     try {
-      const saved = await apiUpdateStoppage(updated, pin);
+      let saved = updated;
+      try {
+        saved = await apiUpdateStoppage(updated, pin);
+      } catch (err: any) {
+        if (!isBackendConnected) {
+          saved = updated;
+        } else {
+          throw err;
+        }
+      }
       setRecords((prev) => {
         const next = prev.map((r) => (r.id === saved.id ? saved : r));
         try {
@@ -440,7 +449,7 @@ export default function App() {
         }
         return next;
       });
-      setToastMessage(`Paragem da ${saved.machineId} corrigida e guardada na nuvem com sucesso!`);
+      setToastMessage(`Paragem da ${saved.machineId} corrigida e guardada com sucesso!`);
     } finally {
       isSavingStoppageRef.current = false;
       void syncWithCloud();

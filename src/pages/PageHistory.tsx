@@ -34,6 +34,7 @@ import { getShiftFromTimeString } from '../utils/shift';
 import { normalizeDateToYMD, getLocalYMD } from '../utils/formatters';
 import { DeletePinModal } from '../components/DeletePinModal';
 import { EditStoppageModal } from '../components/EditStoppageModal';
+import { AuthorizeEditPinModal } from '../components/AuthorizeEditPinModal';
 
 interface PageHistoryProps {
   records: StoppageRecord[];
@@ -67,7 +68,9 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
   const [customEndDate, setCustomEndDate] = useState<string>('');
   const [expandedRecordId, setExpandedRecordId] = useState<string | null>(null);
   const [stoppageToDelete, setStoppageToDelete] = useState<StoppageRecord | null>(null);
+  const [stoppageToAuthorizeEdit, setStoppageToAuthorizeEdit] = useState<StoppageRecord | null>(null);
   const [stoppageToEdit, setStoppageToEdit] = useState<StoppageRecord | null>(null);
+  const [authorizedPin, setAuthorizedPin] = useState<string>('');
   const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
   const [exportSuccessMessage, setExportSuccessMessage] = useState<string | null>(null);
 
@@ -839,10 +842,10 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
                         onClick={(e) => {
                           e.stopPropagation();
                           playIndustrialClick();
-                          setStoppageToEdit(r);
+                          setStoppageToAuthorizeEdit(r);
                         }}
                         className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-950/40 px-2.5 py-1 text-[11px] font-semibold text-amber-300 hover:bg-amber-900/50 hover:text-amber-200 transition-colors shadow-sm active:scale-95"
-                        title="Corrigir máquina, data/hora, tipo, motivo ou etapas desta paragem após o fecho"
+                        title="Corrigir máquina, data/hora, tipo, motivo ou etapas desta paragem após o fecho (PIN de segurança obrigatório)"
                       >
                         <Pencil className="h-3.5 w-3.5" />
                         <span>Editar Paragem</span>
@@ -1011,15 +1014,32 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
         onConfirmDelete={handleConfirmDelete}
       />
 
+      {/* Security Authorization PIN Modal for Editing */}
+      <AuthorizeEditPinModal
+        isOpen={!!stoppageToAuthorizeEdit}
+        record={stoppageToAuthorizeEdit}
+        onClose={() => setStoppageToAuthorizeEdit(null)}
+        onConfirmPin={(pin) => {
+          setAuthorizedPin(pin);
+          setStoppageToEdit(stoppageToAuthorizeEdit);
+          setStoppageToAuthorizeEdit(null);
+        }}
+      />
+
       {/* Edit Closed Stoppage Modal */}
       <EditStoppageModal
         isOpen={!!stoppageToEdit}
         record={stoppageToEdit}
-        onClose={() => setStoppageToEdit(null)}
+        initialPin={authorizedPin}
+        onClose={() => {
+          setStoppageToEdit(null);
+          setAuthorizedPin('');
+        }}
         onSave={async (updatedRecord, pin) => {
           if (onUpdateRecord) {
-            await onUpdateRecord(updatedRecord, pin);
+            await onUpdateRecord(updatedRecord, pin || authorizedPin);
             setStoppageToEdit(null);
+            setAuthorizedPin('');
             setExportSuccessMessage(`Paragem da ${updatedRecord.machineId} (${updatedRecord.date} ${updatedRecord.startTime}) corrigida com sucesso!`);
             setTimeout(() => setExportSuccessMessage(null), 4000);
           }

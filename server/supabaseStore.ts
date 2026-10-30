@@ -323,6 +323,36 @@ export async function saveStoppage(
   });
 }
 
+export async function updateStoppage(
+  id: string,
+  record: Record<string, unknown> & { id: string; machineId: string; startTimestamp: number; startTime: string; date: string; createdAt: number }
+) {
+  const normalizedMachineId = normalizeMachineId(record.machineId);
+  const row = {
+    id,
+    machine_id: normalizedMachineId,
+    date: record.date,
+    start_time: record.startTime,
+    start_timestamp: record.startTimestamp,
+    created_at: record.createdAt || 0,
+    data: record,
+  };
+  const query = new URLSearchParams({ id: `eq.${id}` });
+  try {
+    const patched = await request<StoppageRow[]>(`/stoppages?${query}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    if (patched && patched.length > 0) {
+      return { success: true, data: patched[0].data || record };
+    }
+  } catch (patchErr) {
+    console.warn('Direct PATCH on /stoppages failed, falling back to RPC:', patchErr);
+  }
+  return saveStoppage(record, false);
+}
+
 export async function deleteStoppage(id: string) {
   const query = new URLSearchParams({ id: `eq.${id}` });
   const rows = await request<DataRow[]>(`/stoppages?${query}`, {
