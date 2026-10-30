@@ -27,6 +27,7 @@ import {
   apiStartActiveDowntime,
   apiCancelActiveDowntime,
   apiSaveStoppage,
+  apiUpdateStoppage,
   apiDeleteStoppage,
   apiMigrateLocalRecords,
   apiBatchImportStoppages,
@@ -385,15 +386,20 @@ export default function App() {
     cloudStateVersionRef.current += 1;
     try {
       await apiSaveStoppage(newRecord);
+      // Explicitly delete from active downtimes on the server
+      await apiCancelActiveDowntime(newRecord.machineId).catch(() => {});
+
+      const cleanMachineId = newRecord.machineId.trim().toUpperCase();
       const updatedRecords = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
       const remainingActive = activeDowntimes.filter(
-        (downtime) => downtime.machineId.toUpperCase() !== newRecord.machineId.toUpperCase()
+        (downtime) => downtime.machineId.trim().toUpperCase() !== cleanMachineId
       );
       setRecords(updatedRecords);
       setActiveDowntimes(remainingActive);
+      setFocusedDowntime(null);
+      setStopEndTimestamp(0);
       localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updatedRecords));
       localStorage.setItem('manutrack_active_downtimes', JSON.stringify(remainingActive));
-      setFocusedDowntime(null);
       setToastMessage(`Paragem da ${newRecord.machineId} registada com sucesso (${newRecord.durationFormatted})!`);
       setCurrentPage('home');
     } finally {
@@ -417,6 +423,21 @@ export default function App() {
     });
 
     setToastMessage('Registo de paragem eliminado com sucesso da base de dados.');
+  };
+
+  // Handler for editing/correcting stoppage records after closure
+  const handleUpdateRecord = async (updated: StoppageRecord, pin?: string) => {
+    isSavingStoppageRef.current = true;
+    cloudStateVersionRef.current += 1;
+    try {
+      const saved = await apiUpdateStoppage(updated, pin);
+      const updatedRecords = records.map((r) => (r.id === saved.id ? saved : r));
+      setRecords(updatedRecords);
+      localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updatedRecords));
+      setToastMessage(`Paragem da ${saved.machineId} corrigida e guardada na nuvem com sucesso!`);
+    } finally {
+      isSavingStoppageRef.current = false;
+    }
   };
 
   // Handler for manual retrospective stoppage entry
@@ -727,7 +748,10 @@ export default function App() {
             records={records}
             onBackToHome={() => setCurrentPage('home')}
             onDeleteRecord={handleDeleteRecord}
+            onUpdateRecord={handleUpdateRecord}
             onOpenManualEntry={() => setCurrentPage('manual_entry')}
+            availableOperators={operators}
+            availableStoppageTypes={stoppageTypes}
           />
         )}
 

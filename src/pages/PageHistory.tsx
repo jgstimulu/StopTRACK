@@ -19,9 +19,10 @@ import {
   BarChart2,
   Database,
   CheckCircle,
+  Pencil,
 } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
-import { StoppageRecord } from '../types/manutrack';
+import { StoppageRecord, Operator, StoppageTypeItem } from '../types/manutrack';
 import { STOPPAGE_TYPES } from '../data/initialData';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
 import {
@@ -32,12 +33,16 @@ import {
 import { getShiftFromTimeString } from '../utils/shift';
 import { normalizeDateToYMD, getLocalYMD } from '../utils/formatters';
 import { DeletePinModal } from '../components/DeletePinModal';
+import { EditStoppageModal } from '../components/EditStoppageModal';
 
 interface PageHistoryProps {
   records: StoppageRecord[];
   onBackToHome: () => void;
   onDeleteRecord?: (id: string, pin: string) => Promise<void>;
+  onUpdateRecord?: (record: StoppageRecord, pin?: string) => Promise<void>;
   onOpenManualEntry?: () => void;
+  availableOperators?: Operator[];
+  availableStoppageTypes?: StoppageTypeItem[];
 }
 
 type TimeFilterOption = 'all' | 'today' | 'yesterday' | 'last_week' | 'last_month' | 'custom';
@@ -46,7 +51,10 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
   records,
   onBackToHome,
   onDeleteRecord,
+  onUpdateRecord,
   onOpenManualEntry,
+  availableOperators = [],
+  availableStoppageTypes = [],
 }) => {
   const [search, setSearch] = useState('');
   const [selectedMachine, setSelectedMachine] = useState<string>('all');
@@ -59,6 +67,7 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
   const [customEndDate, setCustomEndDate] = useState<string>('');
   const [expandedRecordId, setExpandedRecordId] = useState<string | null>(null);
   const [stoppageToDelete, setStoppageToDelete] = useState<StoppageRecord | null>(null);
+  const [stoppageToEdit, setStoppageToEdit] = useState<StoppageRecord | null>(null);
   const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
   const [exportSuccessMessage, setExportSuccessMessage] = useState<string | null>(null);
 
@@ -824,8 +833,22 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
                       </div>
                     )}
 
-                    {onDeleteRecord && (
-                      <div className="pt-2 flex justify-end">
+                    <div className="pt-2 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playIndustrialClick();
+                          setStoppageToEdit(r);
+                        }}
+                        className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-950/40 px-2.5 py-1 text-[11px] font-semibold text-amber-300 hover:bg-amber-900/50 hover:text-amber-200 transition-colors shadow-sm active:scale-95"
+                        title="Corrigir máquina, data/hora, tipo, motivo ou etapas desta paragem após o fecho"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        <span>Editar Paragem</span>
+                      </button>
+
+                      {onDeleteRecord && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -833,14 +856,14 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
                             playIndustrialClick();
                             setStoppageToDelete(r);
                           }}
-                          className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-1 text-[11px] font-semibold text-rose-300 hover:bg-rose-900/50 hover:text-rose-200 transition-colors shadow-sm"
+                          className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-1 text-[11px] font-semibold text-rose-300 hover:bg-rose-900/50 hover:text-rose-200 transition-colors shadow-sm active:scale-95"
                           title="Eliminar este registo de paragem mediante introdução de PIN"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                           <span>Remover</span>
                         </button>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -986,6 +1009,22 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
         record={stoppageToDelete}
         onClose={() => setStoppageToDelete(null)}
         onConfirmDelete={handleConfirmDelete}
+      />
+
+      {/* Edit Closed Stoppage Modal */}
+      <EditStoppageModal
+        isOpen={!!stoppageToEdit}
+        record={stoppageToEdit}
+        onClose={() => setStoppageToEdit(null)}
+        onSave={async (updatedRecord, pin) => {
+          if (onUpdateRecord) {
+            await onUpdateRecord(updatedRecord, pin);
+            setExportSuccessMessage(`Paragem da ${updatedRecord.machineId} (${updatedRecord.date} ${updatedRecord.startTime}) corrigida com sucesso!`);
+            setTimeout(() => setExportSuccessMessage(null), 4000);
+          }
+        }}
+        availableOperators={availableOperators}
+        availableStoppageTypes={availableStoppageTypes}
       />
     </div>
   );

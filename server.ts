@@ -737,6 +737,108 @@ app.post('/api/stoppages', async (req, res) => {
   }
 });
 
+app.put('/api/stoppages/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador inválido.' });
+  }
+
+  const incoming = req.body;
+  const machineId = typeof incoming?.machineId === 'string'
+    ? incoming.machineId.trim().replace(/\s+/g, '').toUpperCase()
+    : '';
+
+  if (
+    !incoming ||
+    !/^[A-Z0-9_-]{1,64}$/.test(machineId) ||
+    !Number.isFinite(incoming.startTimestamp) ||
+    !Number.isFinite(incoming.endTimestamp) ||
+    incoming.startTimestamp <= 0 ||
+    incoming.endTimestamp < incoming.startTimestamp
+  ) {
+    return res.status(400).json({ error: 'Dados da paragem inválidos.' });
+  }
+
+  const pinHeader = req.headers['x-operator-pin'] || req.headers['x-deletion-pin'];
+  const pinBody = req.body?.pin;
+  const providedPin = (pinHeader || pinBody || '').toString().trim();
+
+  const editThrottleKeys = [`edit:ip:${req.ip || 'unknown'}`, 'edit:global'];
+
+  try {
+    const session = await getSession(req);
+    const hasSessionAuthorization =
+      session?.role === 'admin' ||
+      (session?.role === 'operator' && Boolean(session.canClose));
+
+    if (!hasSessionAuthorization && providedPin) {
+      const lockedUntil = await loginThrottle.getLockedUntil(editThrottleKeys);
+      if (lockedUntil > Date.now()) {
+        return rejectLocked(res, lockedUntil);
+      }
+    }
+
+    const operators = hasSessionAuthorization ? [] : await supabaseStore.getOperators();
+    const hasOperatorsConfigured = operators.some(o => o.active && o.canClose && o.pinSalt && o.pinHash);
+
+    let isAuthorized = hasSessionAuthorization;
+    if (!isAuthorized && hasOperatorsConfigured) {
+      const operatorPinValid =
+        PIN_PATTERN.test(providedPin) &&
+        operators.some((operator) =>
+          operator.active &&
+          operator.canClose &&
+          operator.pinSalt &&
+          operator.pinHash &&
+          verifySecret(providedPin, operator.pinSalt, operator.pinHash)
+        );
+      if (operatorPinValid) {
+        isAuthorized = true;
+      }
+    } else if (!isAuthorized && !hasOperatorsConfigured) {
+      isAuthorized = true;
+    }
+
+    if (!isAuthorized) {
+      if (providedPin) {
+        const lockedUntil = await loginThrottle.registerFailure([
+          { key: editThrottleKeys[0], limit: DELETE_PIN_LIMIT_PER_IP },
+          { key: editThrottleKeys[1], limit: DELETE_PIN_LIMIT_GLOBAL },
+        ]);
+        if (lockedUntil > Date.now()) {
+          return rejectLocked(res, lockedUntil);
+        }
+      }
+      return res.status(401).json({ error: 'PIN de operador autorizado ou sessão necessária para editar a paragem.' });
+    }
+
+    if (providedPin && !hasSessionAuthorization) {
+      await loginThrottle.clearFailures([editThrottleKeys[0]]);
+    }
+
+    const sanitized = sanitizeStoppageRecord({ ...incoming, id });
+    if (sanitized.ok === false) {
+      return res.status(400).json({ error: sanitized.error });
+    }
+
+    const record: SanitizedStoppage = {
+      ...sanitized.record,
+      shift: sanitized.record.shift || computeShift(sanitized.record.startTimestamp, sanitized.record.startTime),
+    };
+
+    const result = await supabaseStore.saveStoppage(record, false);
+    if (!result?.success) {
+      return res.status(409).json({
+        error: typeof result?.error === 'string' ? result.error : 'Não foi possível atualizar a paragem.',
+      });
+    }
+
+    res.json(result.data || record);
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
 app.delete('/api/stoppages/:id', async (req, res) => {
   const { id } = req.params;
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {

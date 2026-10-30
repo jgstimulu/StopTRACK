@@ -148,20 +148,58 @@ export async function apiStartActiveDowntime(downtime: ActiveDowntime): Promise<
 }
 
 export async function apiCancelActiveDowntime(machineId: string): Promise<void> {
+  const headers = getOperatorHeaders();
+  const adminToken = getAdminToken();
+  if (!headers.Authorization && adminToken) {
+    headers.Authorization = 'Bearer ' + adminToken;
+  }
   const res = await fetch(`/api/active-stoppages/${encodeURIComponent(machineId)}`, {
     method: 'DELETE',
-    headers: getOperatorHeaders(),
+    headers,
   });
   if (!res.ok) throw await responseError(res, 'Falha ao cancelar paragem ativa.');
 }
 
 export async function apiSaveStoppage(record: StoppageRecord, requireOperatorAuth = false): Promise<StoppageRecord> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const operatorToken = getOperatorToken();
+  const adminToken = getAdminToken();
+  if (operatorToken) {
+    headers.Authorization = 'Bearer ' + operatorToken;
+  } else if (adminToken) {
+    headers.Authorization = 'Bearer ' + adminToken;
+  }
+
   const res = await fetch('/api/stoppages', {
     method: 'POST',
-    headers: requireOperatorAuth ? getOperatorHeaders() : { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(record),
   });
   if (!res.ok) throw await responseError(res, 'Falha ao guardar paragem na nuvem.');
+  return await res.json();
+}
+
+export async function apiUpdateStoppage(
+  record: StoppageRecord,
+  pin?: string
+): Promise<StoppageRecord> {
+  const headers = getAuthHeaders();
+  const operatorToken = getOperatorToken();
+  if (!getAdminToken() && operatorToken) {
+    headers.Authorization = 'Bearer ' + operatorToken;
+  }
+  if (pin) {
+    headers['x-operator-pin'] = pin.trim();
+  }
+
+  const res = await fetch(`/api/stoppages/${encodeURIComponent(record.id)}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ ...record, pin: pin ? pin.trim() : undefined }),
+  });
+  if (!res.ok) {
+    throw await responseError(res, 'Falha ao atualizar dados da paragem.');
+  }
   return await res.json();
 }
 
