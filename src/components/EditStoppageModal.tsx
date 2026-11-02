@@ -143,6 +143,10 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
     );
   }, [availableTemplates, availableStoppageTypes, stoppageType]);
 
+  const currentActiveTemplate = useMemo(() => {
+    return matchingTemplates.find((t) => t.id === selectedTemplateId) || null;
+  }, [matchingTemplates, selectedTemplateId]);
+
   const applyTemplate = (tpl: StoppageTemplate) => {
     setSelectedTemplateId(tpl.id);
     setSubcategory(tpl.subcategory);
@@ -870,25 +874,21 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
             </div>
           </div>
 
-          {/* Section 4: Descriptions & Action details */}
-          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3.5 space-y-3">
-            <div className="flex items-center justify-between">
-              <h4 className="text-[11px] font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
-                <FileText className="h-3.5 w-3.5 text-amber-400" />
-                <span>Descrição da Ocorrência e Resolução</span>
+          {/* Section 4: Padronização Semântica & Modelos (Causa, Motivo e Ação Vinculados) */}
+          <div className="rounded-xl border border-sky-500/40 bg-sky-950/20 p-3.5 space-y-3">
+            <div className="flex items-center justify-between border-b border-sky-800/40 pb-2">
+              <h4 className="text-[11px] font-bold text-sky-200 uppercase tracking-wide flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5 text-sky-400" />
+                <span>Modelos Padronizados & Causa Típica</span>
               </h4>
-              <span className="text-[10px] text-sky-400/80 font-mono flex items-center gap-1">
-                <Sparkles className="h-3 w-3" />
-                Modelos Padronizados
+              <span className="text-[10px] text-sky-300 bg-sky-900/60 px-2 py-0.5 rounded font-mono border border-sky-700/50">
+                Vinculação Direta & Editável
               </span>
             </div>
 
             {/* Template Selector Pills */}
             {matchingTemplates.length > 0 && (
-              <div className="rounded-lg border border-sky-500/30 bg-sky-950/20 p-2.5 space-y-2">
-                <span className="block text-[10px] font-bold uppercase tracking-wider text-sky-300">
-                  Modelos Sugeridos para {stoppageType}:
-                </span>
+              <div className="space-y-2.5">
                 <div className="flex flex-wrap gap-1.5">
                   {matchingTemplates.map((tpl) => (
                     <button
@@ -898,7 +898,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                         playIndustrialClick();
                         applyTemplate(tpl);
                       }}
-                      className={`px-2 py-0.5 text-[11px] rounded-lg font-medium transition-all text-left flex items-center gap-1.5 ${
+                      className={`px-2 py-1 text-[11px] rounded-lg font-medium transition-all text-left flex items-center gap-1.5 ${
                         selectedTemplateId === tpl.id
                           ? 'bg-sky-500 text-white shadow-sm ring-1 ring-sky-300 font-bold'
                           : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700'
@@ -914,101 +914,146 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                       playIndustrialClick();
                       setSelectedTemplateId('custom');
                     }}
-                    className={`px-2 py-0.5 text-[11px] rounded-lg font-medium transition-all text-left ${
+                    className={`px-2 py-1 text-[11px] rounded-lg font-medium transition-all text-left ${
                       selectedTemplateId === 'custom'
                         ? 'bg-slate-700 text-white ring-1 ring-slate-400 font-bold'
                         : 'bg-slate-900/60 text-slate-400 hover:bg-slate-800 border border-dashed border-slate-700'
                     }`}
                   >
-                    Personalizado
+                    Personalizado / Manual
                   </button>
                 </div>
 
-                {/* Subcategory & Typical Cause */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                  <div>
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      Subcategoria
-                    </label>
-                    <input
-                      type="text"
-                      value={subcategory}
-                      onChange={(e) => setSubcategory(e.target.value)}
-                      placeholder="Ex: Transmissão Mecânica, Automação..."
-                      className="mt-0.5 w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white focus:border-sky-500 focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      Causa Típica Identificada
-                    </label>
-                    <input
-                      type="text"
-                      value={typicalCause}
-                      onChange={(e) => setTypicalCause(e.target.value)}
-                      placeholder="Ex: Falta de lubrificação, Sobrecarga..."
-                      className="mt-0.5 w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white focus:border-sky-500 focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                {/* Keywords Badges */}
-                {keywords.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1 pt-0.5">
-                    <Tag className="h-3 w-3 text-sky-400 shrink-0" />
-                    <span className="text-[10px] text-slate-400 mr-1">Palavras-chave:</span>
-                    {keywords.map((kw, i) => (
-                      <span
-                        key={i}
-                        className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-sky-950/80 text-sky-300 border border-sky-800/60"
-                      >
-                        #{kw}
-                      </span>
-                    ))}
+                {/* Banner of active template link */}
+                {currentActiveTemplate && selectedTemplateId !== 'custom' && (
+                  <div className="flex items-center justify-between text-[11px] text-sky-200 bg-sky-900/30 border border-sky-700/50 rounded-lg px-2.5 py-1.5">
+                    <span className="flex items-center gap-1.5 truncate">
+                      <Check className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                      <span>Vinculado ao modelo: <strong>{currentActiveTemplate.title}</strong></span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playIndustrialClick();
+                        applyTemplate(currentActiveTemplate);
+                      }}
+                      className="text-[10px] text-sky-400 hover:text-sky-200 underline font-semibold shrink-0 ml-2"
+                    >
+                      Repor textos padrão
+                    </button>
                   </div>
                 )}
               </div>
             )}
 
-            <div>
-              <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                Descrição da Paragem (Motivo / Causa)
-              </label>
+            {/* Subcategory & Typical Cause */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-300 flex items-center justify-between">
+                  <span>Subcategoria</span>
+                  <span className="text-[9px] text-slate-500 font-normal">Padronizada</span>
+                </label>
+                <input
+                  type="text"
+                  value={subcategory}
+                  onChange={(e) => setSubcategory(e.target.value)}
+                  placeholder="Ex: Transmissão Mecânica, Automação..."
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-300 flex items-center justify-between">
+                  <span>Causa Típica Identificada</span>
+                  <span className="text-[9px] text-slate-500 font-normal">Padronizada</span>
+                </label>
+                <input
+                  type="text"
+                  value={typicalCause}
+                  onChange={(e) => setTypicalCause(e.target.value)}
+                  placeholder="Ex: Falta de lubrificação, Sobrecarga..."
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+            </div>
 
+            {/* Descrição da Paragem (Motivo / Causa) */}
+            <div id="field-stoppageDescription">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5">
+                  <FileText className="h-3 w-3 text-amber-400" />
+                  <span>Descrição da Paragem (Motivo / Causa) <span className="text-rose-400">*</span></span>
+                </label>
+                <span className="text-[10px] text-sky-400 font-mono">
+                  {currentActiveTemplate && selectedTemplateId !== 'custom' ? 'Preenchido do modelo (editável)' : 'Editável'}
+                </span>
+              </div>
               <textarea
                 value={stoppageDescription}
                 onChange={(e) => setStoppageDescription(e.target.value)}
                 rows={2}
                 placeholder="Ex.: Motor principal sobreaqueceu e desarmou o disjuntor Q1..."
-                className="w-full rounded-xl border border-slate-700 bg-slate-800 p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
+                className="w-full rounded-lg border border-slate-700 bg-slate-800/90 p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
               />
             </div>
 
-            <div>
-              <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                Ação Realizada / Resolução
-              </label>
+            {/* Ação Realizada / Resolução */}
+            <div id="field-actionsTaken">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5">
+                  <Wrench className="h-3 w-3 text-emerald-400" />
+                  <span>Descrição do que foi feito (Ação Corretiva) <span className="text-rose-400">*</span></span>
+                </label>
+                <span className="text-[10px] text-emerald-400 font-mono">
+                  {currentActiveTemplate && selectedTemplateId !== 'custom' ? 'Preenchido do modelo (editável)' : 'Editável'}
+                </span>
+              </div>
               <textarea
                 value={actionsTaken}
                 onChange={(e) => setActionsTaken(e.target.value)}
                 rows={2}
                 placeholder="Ex.: Substituição da correia dentada, reaperto de bornes e teste em vazio..."
-                className="w-full rounded-xl border border-slate-700 bg-slate-800 p-2.5 text-xs text-emerald-200 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
+                className="w-full rounded-lg border border-slate-700 bg-slate-800/90 p-2.5 text-xs text-emerald-200 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
               />
             </div>
 
-            <div>
-              <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                Outras Observações (Opcional)
+            {/* Keywords Badges */}
+            {keywords.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-slate-800/60">
+                <Tag className="h-3 w-3 text-sky-400 shrink-0" />
+                <span className="text-[10px] text-slate-400 mr-1">Palavras-chave semânticas:</span>
+                {keywords.map((kw, i) => (
+                  <span
+                    key={i}
+                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/80 text-sky-300 border border-sky-800/60"
+                  >
+                    #{kw}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Section 4.1: Outras Observações (Opcional - Único campo opcional) */}
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
+                <FileText className="h-3 w-3 text-slate-400" />
+                <span>Outras Observações</span>
               </label>
-              <textarea
-                value={otherObservations}
-                onChange={(e) => setOtherObservations(e.target.value)}
-                rows={1}
-                placeholder="Ex.: Necessário encomendar rolamento suplente para armazém..."
-                className="w-full rounded-xl border border-slate-700 bg-slate-800 p-2.5 text-xs text-slate-300 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
-              />
+              <span className="text-[10px] text-slate-400 font-semibold bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
+                Opcional
+              </span>
             </div>
+            <p className="text-[11px] text-slate-400">
+              Deixe aqui apenas anotações complementares (peças de substituição, notas para o próximo turno, etc.).
+            </p>
+            <textarea
+              value={otherObservations}
+              onChange={(e) => setOtherObservations(e.target.value)}
+              rows={2}
+              placeholder="Ex.: Necessário encomendar rolamento suplente para armazém..."
+              className="w-full rounded-lg border border-slate-700 bg-slate-800/90 p-2.5 text-xs text-slate-300 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
+            />
           </div>
 
           {/* Section 5: Stages Decomposition */}
