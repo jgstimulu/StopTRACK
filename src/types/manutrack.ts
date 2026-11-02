@@ -57,6 +57,19 @@ export interface ActiveDowntime {
   completedStages?: StoppageStage[]; // Fases concluídas durante esta mesma paragem
 }
 
+export interface StoppageTemplate {
+  id: string;
+  stoppageTypeId: string; // Ref ao StoppageTypeItem (ex: 'st-1') ou nome do tipo
+  title: string;
+  subcategory: string;
+  typicalCause: string;
+  defaultDescription: string;
+  defaultActions: string;
+  keywords: string[];
+  active: boolean;
+  displayOrder?: number;
+}
+
 export type StoppagePriority = 'Baixa' | 'Média' | 'Alta' | 'Crítica';
 export type StoppageStatus = 'Resolvido' | 'Em Decorrer' | 'Pendente';
 
@@ -81,6 +94,12 @@ export interface StoppageRecord {
   stoppageDescription: string;
   actionsTaken: string;
   otherObservations?: string;
+  // Campos semânticos padronizados
+  templateId?: string;
+  subcategory?: string;
+  typicalCause?: string;
+  correctiveActions?: string;
+  keywords?: string[];
   stages?: StoppageStage[]; // Decomposição cronológica da intervenção por etapas
   createdAt: number;
 }
@@ -95,5 +114,6 @@ export type AppPage =
   | 'admin'
   | 'active_monitoring'
   | 'manual_entry';
+
 
 

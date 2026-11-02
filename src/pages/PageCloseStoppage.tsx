@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Save,
   Clock,
@@ -20,6 +20,8 @@ import {
   ShieldAlert,
   Power,
   Check,
+  Sparkles,
+  Tag,
 } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
 import {
@@ -31,6 +33,7 @@ import {
   StoppageStatus,
   StoppageStage,
   StoppageStageLevel,
+  StoppageTemplate,
 } from '../types/manutrack';
 import { StagesEditor } from '../components/StagesEditor';
 import { INITIAL_STOPPAGE_TYPES } from '../data/initialData';
@@ -46,6 +49,7 @@ interface PageCloseStoppageProps {
   operators?: string[];
   availableOperators?: Operator[];
   availableStoppageTypes?: StoppageTypeItem[];
+  availableTemplates?: StoppageTemplate[];
   onOpenAdmin?: () => void;
 }
 
@@ -56,8 +60,10 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
   onCancel,
   availableOperators = [],
   availableStoppageTypes = INITIAL_STOPPAGE_TYPES,
+  availableTemplates = [],
   onOpenAdmin,
 }) => {
+
   // Calculated duration and times
   const durationMs = Math.max(0, endTimestamp - activeDowntime.startTimestamp);
   const durationFormatted = formatDurationMs(durationMs);
@@ -112,6 +118,65 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
   const [stoppageDescription, setStoppageDescription] = useState<string>('');
   const [actionsTaken, setActionsTaken] = useState<string>('');
   const [otherObservations, setOtherObservations] = useState<string>('');
+
+  // Padronização e Modelos
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [subcategory, setSubcategory] = useState<string>('');
+  const [typicalCause, setTypicalCause] = useState<string>('');
+  const [keywords, setKeywords] = useState<string[]>([]);
+
+  // Filtrar modelos correspondentes ao tipo de paragem selecionado
+  const matchingTemplates = useMemo(() => {
+    const currentTypeItem = availableStoppageTypes.find(
+      (st) => st.name.toLowerCase() === stoppageType.toLowerCase()
+    );
+    return availableTemplates.filter(
+      (t) =>
+        t.active &&
+        (t.stoppageTypeId === currentTypeItem?.id ||
+          t.stoppageTypeId === stoppageType ||
+          t.stoppageTypeId.toLowerCase() === stoppageType.toLowerCase())
+    );
+  }, [availableTemplates, availableStoppageTypes, stoppageType]);
+
+  const applyTemplate = (tpl: StoppageTemplate) => {
+    setSelectedTemplateId(tpl.id);
+    setSubcategory(tpl.subcategory);
+    setTypicalCause(tpl.typicalCause);
+    setStoppageDescription(tpl.defaultDescription);
+    setActionsTaken(tpl.defaultActions);
+    setKeywords(tpl.keywords || []);
+  };
+
+  // Pré-preenchimento da sugestão ao abrir
+  useEffect(() => {
+    if (matchingTemplates.length > 0 && !selectedTemplateId) {
+      applyTemplate(matchingTemplates[0]);
+    }
+  }, [matchingTemplates]);
+
+  const handleTypeChange = (newType: string) => {
+    setStoppageType(newType);
+    const currentTypeItem = availableStoppageTypes.find(
+      (st) => st.name.toLowerCase() === newType.toLowerCase()
+    );
+    const matches = availableTemplates.filter(
+      (t) =>
+        t.active &&
+        (t.stoppageTypeId === currentTypeItem?.id ||
+          t.stoppageTypeId === newType ||
+          t.stoppageTypeId.toLowerCase() === newType.toLowerCase())
+    );
+    if (matches.length > 0) {
+      applyTemplate(matches[0]);
+    } else {
+      setSelectedTemplateId('');
+      setSubcategory('');
+      setTypicalCause('');
+      setKeywords([]);
+    }
+  };
+
 
   // Sub-stages decomposition
   const totalDurationMinutes = Math.max(1, Math.round(durationMs / 60000));
@@ -234,9 +299,15 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
           ? stages.map((s) => `${s.type} (${s.technician || 'Técnico'})`).join(' → ')
           : 'Intervenção técnica realizada e máquina testada'),
       otherObservations: otherObservations.trim() || undefined,
+      templateId: selectedTemplateId && selectedTemplateId !== 'custom' ? selectedTemplateId : undefined,
+      subcategory: subcategory.trim() || undefined,
+      typicalCause: typicalCause.trim() || undefined,
+      correctiveActions: actionsTaken.trim() || undefined,
+      keywords: keywords.length > 0 ? keywords : undefined,
       stages: isDecomposingStages && stages.length > 0 ? stages : undefined,
       createdAt: Date.now(),
     };
+
 
     setIsSaving(true);
     try {
@@ -509,7 +580,7 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
           <div className="mt-2">
             <select
               value={stoppageType}
-              onChange={(e) => setStoppageType(e.target.value)}
+              onChange={(e) => handleTypeChange(e.target.value)}
               className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs font-semibold text-white focus:border-sky-500 focus:outline-none"
             >
               {availableStoppageTypes.map((st) => (
@@ -520,6 +591,116 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
             </select>
           </div>
         </div>
+
+        {/* 3.1. Padronização Semântica & Catálogo de Modelos */}
+        <div className="rounded-xl border border-sky-500/30 bg-sky-950/20 p-3.5 shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5">
+              <Sparkles className="h-4 w-4 text-sky-400" />
+              <span className="text-xs font-bold uppercase tracking-wider text-sky-200">
+                Modelos Padronizados & Causa Típica
+              </span>
+            </div>
+            <span className="text-[10px] text-sky-400/80 font-mono">Sugestão Editável</span>
+          </div>
+
+          {matchingTemplates.length > 0 ? (
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap gap-1.5">
+                {matchingTemplates.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    onClick={() => {
+                      playIndustrialClick();
+                      applyTemplate(tpl);
+                    }}
+                    className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all text-left flex items-center gap-1.5 ${
+                      selectedTemplateId === tpl.id
+                        ? 'bg-sky-500 text-white shadow-sm ring-1 ring-sky-300 font-bold'
+                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700'
+                    }`}
+                  >
+                    <span>{tpl.title}</span>
+                    {selectedTemplateId === tpl.id && <Check className="h-3 w-3 shrink-0" />}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    playIndustrialClick();
+                    setSelectedTemplateId('custom');
+                  }}
+                  className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all text-left ${
+                    selectedTemplateId === 'custom'
+                      ? 'bg-slate-700 text-white ring-1 ring-slate-400 font-bold'
+                      : 'bg-slate-900/60 text-slate-400 hover:bg-slate-800 border border-dashed border-slate-700'
+                  }`}
+                >
+                  Personalizado / Manual
+                </button>
+              </div>
+
+              {/* Subcategoria & Causa Típica fields */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Subcategoria
+                  </label>
+                  <input
+                    type="text"
+                    value={subcategory}
+                    onChange={(e) => setSubcategory(e.target.value)}
+                    placeholder="Ex: Transmissão Mecânica, Automação..."
+                    className="mt-0.5 w-full rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-white focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Causa Típica Identificada
+                  </label>
+                  <input
+                    type="text"
+                    value={typicalCause}
+                    onChange={(e) => setTypicalCause(e.target.value)}
+                    placeholder="Ex: Falta de lubrificação, Sobrecarga..."
+                    className="mt-0.5 w-full rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-white focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Semantic Tags/Keywords Badges */}
+              {keywords.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1 pt-1">
+                  <Tag className="h-3 w-3 text-sky-400 shrink-0" />
+                  <span className="text-[10px] text-slate-400 mr-1">Palavras-chave:</span>
+                  {keywords.map((kw, i) => (
+                    <span
+                      key={i}
+                      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/80 text-sky-300 border border-sky-800/60"
+                    >
+                      #{kw}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-[11px] text-slate-400 py-1 flex items-center justify-between">
+              <span>Sem modelos pré-configurados para este tipo. Preenchimento manual ativo.</span>
+              {onOpenAdmin && (
+                <button
+                  type="button"
+                  onClick={onOpenAdmin}
+                  className="text-amber-400 hover:underline font-bold text-[10px]"
+                >
+                  Criar no Catálogo
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
 
         {/* 4. Prioridade da Avaria */}
         <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-3.5 shadow-sm">

@@ -13,10 +13,12 @@ import {
   StoppageTypeItem,
   StoppageStage,
   StoppageStageLevel,
+  StoppageTemplate,
 } from './types/manutrack';
 import {
   MACHINES_DATA,
   INITIAL_STOPPAGE_TYPES,
+  INITIAL_STOPPAGE_TEMPLATES,
   INITIAL_STOPPAGES_SEED,
 } from './data/initialData';
 import { formatTimeOnly, formatDatePt } from './utils/formatters';
@@ -37,9 +39,13 @@ import {
   apiAddStoppageType,
   apiUpdateStoppageType,
   apiDeleteStoppageType,
+  apiAddStoppageTemplate,
+  apiUpdateStoppageTemplate,
+  apiDeleteStoppageTemplate,
   apiResetDefaults,
   apiOperatorLogin,
 } from './services/api';
+
 
 import { PageHome } from './pages/PageHome';
 import { PageSelectMachine } from './pages/PageSelectMachine';
@@ -68,6 +74,16 @@ export default function App() {
       // Ignore
     }
     return INITIAL_STOPPAGE_TYPES;
+  });
+
+  const [stoppageTemplates, setStoppageTemplates] = useState<StoppageTemplate[]>(() => {
+    try {
+      const saved = localStorage.getItem('manutrack_stoppage_templates_cache');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // Ignore
+    }
+    return INITIAL_STOPPAGE_TEMPLATES;
   });
 
   const [isBackendConnected, setIsBackendConnected] = useState<boolean>(true);
@@ -147,6 +163,16 @@ export default function App() {
           return state.stoppageTypes;
         });
       }
+
+      // 2.1. Sync Stoppage Templates
+      if (Array.isArray(state.stoppageTemplates)) {
+        setStoppageTemplates((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(state.stoppageTemplates)) return prev;
+          localStorage.setItem('manutrack_stoppage_templates_cache', JSON.stringify(state.stoppageTemplates));
+          return state.stoppageTemplates!;
+        });
+      }
+
 
       // 3. Sync Active Downtimes (merge running timers)
       if (Array.isArray(state.activeDowntimes)) {
@@ -266,14 +292,42 @@ export default function App() {
     localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(updated));
   };
 
+  // Stoppage Templates CRUD Handlers
+  const handleAddStoppageTemplate = async (data: Omit<StoppageTemplate, 'id' | 'active'>) => {
+    const savedTemplate = await apiAddStoppageTemplate(data);
+    const updated = [...stoppageTemplates, savedTemplate];
+    setStoppageTemplates(updated);
+    localStorage.setItem('manutrack_stoppage_templates_cache', JSON.stringify(updated));
+    setToastMessage('Modelo de avaria criado com sucesso!');
+  };
+
+  const handleUpdateStoppageTemplate = async (id: string, data: Partial<StoppageTemplate>) => {
+    const updatedTemplate = await apiUpdateStoppageTemplate(id, data);
+    const updated = stoppageTemplates.map((t) => (t.id === id ? updatedTemplate : t));
+    setStoppageTemplates(updated);
+    localStorage.setItem('manutrack_stoppage_templates_cache', JSON.stringify(updated));
+    setToastMessage('Modelo de avaria atualizado com sucesso!');
+  };
+
+  const handleDeleteStoppageTemplate = async (id: string) => {
+    await apiDeleteStoppageTemplate(id);
+    const updated = stoppageTemplates.filter((t) => t.id !== id);
+    setStoppageTemplates(updated);
+    localStorage.setItem('manutrack_stoppage_templates_cache', JSON.stringify(updated));
+    setToastMessage('Modelo de avaria removido com sucesso!');
+  };
+
   const handleResetDefaults = async () => {
     await apiResetDefaults();
     cloudStateVersionRef.current += 1;
     setOperators([]);
     setStoppageTypes(INITIAL_STOPPAGE_TYPES);
+    setStoppageTemplates(INITIAL_STOPPAGE_TEMPLATES);
     localStorage.removeItem('manutrack_operators_cache');
     localStorage.setItem('manutrack_stoppage_types_cache', JSON.stringify(INITIAL_STOPPAGE_TYPES));
+    localStorage.setItem('manutrack_stoppage_templates_cache', JSON.stringify(INITIAL_STOPPAGE_TEMPLATES));
   };
+
 
   // Migrate local device records to cloud
   const handleMigrateLocal = async (): Promise<number> => {
@@ -723,6 +777,7 @@ export default function App() {
               }}
               availableOperators={operators}
               availableStoppageTypes={stoppageTypes}
+              availableTemplates={stoppageTemplates}
               onOpenAdmin={() => setCurrentPage('admin')}
             />
           ) : (
@@ -761,6 +816,7 @@ export default function App() {
             onBack={() => setCurrentPage('home')}
             availableOperators={operators}
             availableStoppageTypes={stoppageTypes}
+            availableTemplates={stoppageTemplates}
           />
         )}
 
@@ -774,6 +830,7 @@ export default function App() {
             onOpenManualEntry={() => setCurrentPage('manual_entry')}
             availableOperators={operators}
             availableStoppageTypes={stoppageTypes}
+            availableTemplates={stoppageTemplates}
           />
         )}
 
@@ -785,11 +842,12 @@ export default function App() {
           />
         )}
 
-        {/* BACKEND MANAGEMENT VIEW: Gestão de Pessoal, Tipos de Avaria e Importação CSV */}
+        {/* BACKEND MANAGEMENT VIEW: Gestão de Pessoal, Tipos de Avaria, Modelos e Importação CSV */}
         {currentPage === 'admin' && (
           <PageAdmin
             operators={operators}
             stoppageTypes={stoppageTypes}
+            stoppageTemplates={stoppageTemplates}
             stoppageRecords={records}
             onAddOperator={handleAddOperator}
             onUpdateOperator={handleUpdateOperator}
@@ -797,11 +855,15 @@ export default function App() {
             onAddStoppageType={handleAddStoppageType}
             onUpdateStoppageType={handleUpdateStoppageType}
             onDeleteStoppageType={handleDeleteStoppageType}
+            onAddStoppageTemplate={handleAddStoppageTemplate}
+            onUpdateStoppageTemplate={handleUpdateStoppageTemplate}
+            onDeleteStoppageTemplate={handleDeleteStoppageTemplate}
             onResetDefaults={handleResetDefaults}
             onBatchImportStoppages={handleBatchImportStoppages}
             onBackToHome={() => setCurrentPage('home')}
           />
         )}
+
       </main>
 
       {/* QR Code and Mobile Share Modal */}

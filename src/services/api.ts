@@ -1,14 +1,16 @@
-import { Operator, StoppageTypeItem, StoppageRecord, ActiveDowntime } from '../types/manutrack';
+import { Operator, StoppageTypeItem, StoppageRecord, ActiveDowntime, StoppageTemplate } from '../types/manutrack';
 
 export interface SharedPlantState {
   operators: Operator[];
   stoppageTypes: StoppageTypeItem[];
+  stoppageTemplates?: StoppageTemplate[];
   activeDowntimes: ActiveDowntime[];
   stoppages: StoppageRecord[];
   adminEmail?: string;
   serverTime: number;
   updatedAt: number;
 }
+
 
 const TOKEN_KEY = 'manutrack_admin_token';
 const OPERATOR_TOKEN_KEY = 'manutrack_operator_token';
@@ -341,3 +343,55 @@ export async function apiResetDefaults(): Promise<void> {
     throw new Error(err.error || 'Erro ao restaurar padrões de fábrica');
   }
 }
+
+export async function apiGetStoppageTemplates(): Promise<StoppageTemplate[]> {
+  const res = await fetch('/api/stoppage-templates');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Falha ao carregar modelos de avaria');
+  }
+  return await res.json();
+}
+
+export async function apiAddStoppageTemplate(
+  data: Omit<StoppageTemplate, 'id' | 'active'>
+): Promise<StoppageTemplate> {
+  const res = await fetch('/api/stoppage-templates', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Erro ao criar modelo de avaria');
+  }
+  return await res.json();
+}
+
+export async function apiUpdateStoppageTemplate(
+  id: string,
+  data: Partial<StoppageTemplate>
+): Promise<StoppageTemplate> {
+  const res = await fetch(`/api/stoppage-templates/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Erro ao atualizar modelo de avaria');
+  }
+  return await res.json();
+}
+
+export async function apiDeleteStoppageTemplate(id: string): Promise<void> {
+  const res = await fetch(`/api/stoppage-templates/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Erro ao eliminar modelo de avaria');
+  }
+}
+

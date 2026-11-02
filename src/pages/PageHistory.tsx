@@ -35,6 +35,7 @@ import { normalizeDateToYMD, getLocalYMD } from '../utils/formatters';
 import { DeletePinModal } from '../components/DeletePinModal';
 import { EditStoppageModal } from '../components/EditStoppageModal';
 import { AuthorizeEditPinModal } from '../components/AuthorizeEditPinModal';
+import { StoppageTemplate } from '../types/manutrack';
 
 interface PageHistoryProps {
   records: StoppageRecord[];
@@ -44,6 +45,7 @@ interface PageHistoryProps {
   onOpenManualEntry?: () => void;
   availableOperators?: Operator[];
   availableStoppageTypes?: StoppageTypeItem[];
+  availableTemplates?: StoppageTemplate[];
 }
 
 type TimeFilterOption = 'all' | 'today' | 'yesterday' | 'last_week' | 'last_month' | 'custom';
@@ -56,7 +58,9 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
   onOpenManualEntry,
   availableOperators = [],
   availableStoppageTypes = [],
+  availableTemplates = [],
 }) => {
+
   const [search, setSearch] = useState('');
   const [selectedMachine, setSelectedMachine] = useState<string>('all');
   const [selectedType, setSelectedType] = useState<string>('all');
@@ -1046,7 +1050,9 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
         }}
         availableOperators={availableOperators}
         availableStoppageTypes={availableStoppageTypes}
+        availableTemplates={availableTemplates}
       />
     </div>
   );
+
 };

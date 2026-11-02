@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementação da arquitetura de 3 níveis de etapas: 1-Diagnóstico, 2-Intervenção (com suporte para múltiplas etapas encadeadas, ex: mecânica seguida de elétrica e afinação), e 3-Fecho (finalização/arranque).",
-  "updatedAt":  "2026-10-23T15:02:21.433179354Z",
+  "summary":  "Plano de implementação detalhado para o catálogo de modelos de avaria e paragem (stoppage_templates) no Supabase, com suporte a sugestão de preenchimento automático editável, gestão de causas típicas, ações corretivas, subcategorias e palavras-chave semânticas.",
+  "updatedAt":  "2026-11-02T12:32:30.975432895Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

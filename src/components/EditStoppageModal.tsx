@@ -23,6 +23,8 @@ import {
   Edit3,
   Lock,
   ShieldCheck,
+  Sparkles,
+  Tag,
 } from 'lucide-react';
 import {
   StoppageRecord,
@@ -31,6 +33,7 @@ import {
   StoppageTypeItem,
   StoppagePriority,
   StoppageStatus,
+  StoppageTemplate,
 } from '../types/manutrack';
 import { MACHINES_DATA, INITIAL_STOPPAGE_TYPES } from '../data/initialData';
 import { StagesEditor } from './StagesEditor';
@@ -49,6 +52,7 @@ interface EditStoppageModalProps {
   onSave: (updatedRecord: StoppageRecord, pin?: string) => Promise<void>;
   availableOperators?: Operator[];
   availableStoppageTypes?: StoppageTypeItem[];
+  availableTemplates?: StoppageTemplate[];
   initialPin?: string;
 }
 
@@ -59,8 +63,10 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
   onSave,
   availableOperators = [],
   availableStoppageTypes = INITIAL_STOPPAGE_TYPES,
+  availableTemplates = [],
   initialPin = '',
 }) => {
+
   const [pin, setPin] = useState<string>(initialPin);
   const [machineId, setMachineId] = useState<string>('F01');
   const [date, setDate] = useState<string>('');
@@ -81,6 +87,12 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
   const [otherObservations, setOtherObservations] = useState<string>('');
   const [isDecomposingStages, setIsDecomposingStages] = useState<boolean>(false);
   const [stages, setStages] = useState<StoppageStage[]>([]);
+
+  // Padronização e Modelos
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [subcategory, setSubcategory] = useState<string>('');
+  const [typicalCause, setTypicalCause] = useState<string>('');
+  const [keywords, setKeywords] = useState<string[]>([]);
 
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -116,6 +128,48 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
     }
     return Array.from(names);
   }, [activeOps, record]);
+
+  // Matching templates for current stoppageType
+  const matchingTemplates = useMemo(() => {
+    const currentTypeItem = availableStoppageTypes.find(
+      (st) => st.name.toLowerCase() === stoppageType.toLowerCase()
+    );
+    return availableTemplates.filter(
+      (t) =>
+        t.active &&
+        (t.stoppageTypeId === currentTypeItem?.id ||
+          t.stoppageTypeId === stoppageType ||
+          t.stoppageTypeId.toLowerCase() === stoppageType.toLowerCase())
+    );
+  }, [availableTemplates, availableStoppageTypes, stoppageType]);
+
+  const applyTemplate = (tpl: StoppageTemplate) => {
+    setSelectedTemplateId(tpl.id);
+    setSubcategory(tpl.subcategory);
+    setTypicalCause(tpl.typicalCause);
+    setStoppageDescription(tpl.defaultDescription);
+    setActionsTaken(tpl.defaultActions);
+    setKeywords(tpl.keywords || []);
+  };
+
+  const handleTypeChange = (newType: string) => {
+    setStoppageType(newType);
+    const currentTypeItem = availableStoppageTypes.find(
+      (st) => st.name.toLowerCase() === newType.toLowerCase()
+    );
+    const matches = availableTemplates.filter(
+      (t) =>
+        t.active &&
+        (t.stoppageTypeId === currentTypeItem?.id ||
+          t.stoppageTypeId === newType ||
+          t.stoppageTypeId.toLowerCase() === newType.toLowerCase())
+    );
+    if (matches.length > 0) {
+      applyTemplate(matches[0]);
+    } else {
+      setSelectedTemplateId('');
+    }
+  };
 
   // Populate form fields ONLY when opening or when a new record is loaded (never while actively editing)
   useEffect(() => {
@@ -154,6 +208,12 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
     setActionsTaken(record.actionsTaken || '');
     setOtherObservations(record.otherObservations || '');
 
+    // Initialize semantic fields from record
+    setSelectedTemplateId(record.templateId || '');
+    setSubcategory(record.subcategory || '');
+    setTypicalCause(record.typicalCause || '');
+    setKeywords(Array.isArray(record.keywords) ? record.keywords : []);
+
     const initialStages = Array.isArray(record.stages) ? record.stages : [];
     setStages(initialStages);
     setIsDecomposingStages(initialStages.length > 0);
@@ -162,6 +222,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
     setIsSubmitting(false);
     setPin(initialPin || '');
   }, [isOpen, record?.id, initialPin]);
+
 
   if (!isOpen || !record) return null;
 
@@ -316,8 +377,14 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
         stoppageDescription: stoppageDescription.trim() || `${stoppageType} na ${selectedMachine.code}`,
         actionsTaken: actionsTaken.trim() || 'Intervenção efetuada e validada.',
         otherObservations: otherObservations.trim() || undefined,
+        templateId: selectedTemplateId && selectedTemplateId !== 'custom' ? selectedTemplateId : undefined,
+        subcategory: subcategory.trim() || undefined,
+        typicalCause: typicalCause.trim() || undefined,
+        correctiveActions: actionsTaken.trim() || undefined,
+        keywords: keywords.length > 0 ? keywords : undefined,
         stages: isDecomposingStages && stages.length > 0 ? stages : undefined,
       };
+
 
       await onSave(updatedRecord, pin.trim());
       playSuccessChime();
@@ -554,7 +621,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                   value={stoppageType}
                   onChange={(e) => {
                     playIndustrialClick();
-                    setStoppageType(e.target.value);
+                    handleTypeChange(e.target.value);
                     if (errors.stoppageType) setErrors((prev) => ({ ...prev, stoppageType: '' }));
                   }}
                   className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
@@ -565,6 +632,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                     </option>
                   ))}
                 </select>
+
                 {errors.stoppageType && (
                   <p className="text-[10px] text-rose-400 mt-1 font-semibold">{errors.stoppageType}</p>
                 )}
@@ -804,15 +872,109 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
 
           {/* Section 4: Descriptions & Action details */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3.5 space-y-3">
-            <h4 className="text-[11px] font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
-              <FileText className="h-3.5 w-3.5 text-amber-400" />
-              <span>Descrição da Ocorrência e Resolução</span>
-            </h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-[11px] font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
+                <FileText className="h-3.5 w-3.5 text-amber-400" />
+                <span>Descrição da Ocorrência e Resolução</span>
+              </h4>
+              <span className="text-[10px] text-sky-400/80 font-mono flex items-center gap-1">
+                <Sparkles className="h-3 w-3" />
+                Modelos Padronizados
+              </span>
+            </div>
+
+            {/* Template Selector Pills */}
+            {matchingTemplates.length > 0 && (
+              <div className="rounded-lg border border-sky-500/30 bg-sky-950/20 p-2.5 space-y-2">
+                <span className="block text-[10px] font-bold uppercase tracking-wider text-sky-300">
+                  Modelos Sugeridos para {stoppageType}:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {matchingTemplates.map((tpl) => (
+                    <button
+                      key={tpl.id}
+                      type="button"
+                      onClick={() => {
+                        playIndustrialClick();
+                        applyTemplate(tpl);
+                      }}
+                      className={`px-2 py-0.5 text-[11px] rounded-lg font-medium transition-all text-left flex items-center gap-1.5 ${
+                        selectedTemplateId === tpl.id
+                          ? 'bg-sky-500 text-white shadow-sm ring-1 ring-sky-300 font-bold'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700'
+                      }`}
+                    >
+                      <span>{tpl.title}</span>
+                      {selectedTemplateId === tpl.id && <Check className="h-3 w-3 shrink-0" />}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playIndustrialClick();
+                      setSelectedTemplateId('custom');
+                    }}
+                    className={`px-2 py-0.5 text-[11px] rounded-lg font-medium transition-all text-left ${
+                      selectedTemplateId === 'custom'
+                        ? 'bg-slate-700 text-white ring-1 ring-slate-400 font-bold'
+                        : 'bg-slate-900/60 text-slate-400 hover:bg-slate-800 border border-dashed border-slate-700'
+                    }`}
+                  >
+                    Personalizado
+                  </button>
+                </div>
+
+                {/* Subcategory & Typical Cause */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Subcategoria
+                    </label>
+                    <input
+                      type="text"
+                      value={subcategory}
+                      onChange={(e) => setSubcategory(e.target.value)}
+                      placeholder="Ex: Transmissão Mecânica, Automação..."
+                      className="mt-0.5 w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Causa Típica Identificada
+                    </label>
+                    <input
+                      type="text"
+                      value={typicalCause}
+                      onChange={(e) => setTypicalCause(e.target.value)}
+                      placeholder="Ex: Falta de lubrificação, Sobrecarga..."
+                      className="mt-0.5 w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Keywords Badges */}
+                {keywords.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                    <Tag className="h-3 w-3 text-sky-400 shrink-0" />
+                    <span className="text-[10px] text-slate-400 mr-1">Palavras-chave:</span>
+                    {keywords.map((kw, i) => (
+                      <span
+                        key={i}
+                        className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-sky-950/80 text-sky-300 border border-sky-800/60"
+                      >
+                        #{kw}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div>
               <label className="block text-[11px] font-bold text-slate-400 mb-1">
                 Descrição da Paragem (Motivo / Causa)
               </label>
+
               <textarea
                 value={stoppageDescription}
                 onChange={(e) => setStoppageDescription(e.target.value)}

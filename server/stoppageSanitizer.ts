@@ -189,8 +189,31 @@ export function sanitizeStoppageRecord(
   const otherObservations = optionalText(input.otherObservations, MAX_TEXT);
   if (otherObservations) record.otherObservations = otherObservations;
 
+  // Campos semânticos padronizados
+  const templateId = optionalText(input.templateId, 128);
+  if (templateId) record.templateId = templateId;
+
+  const subcategory = optionalText(input.subcategory, 128);
+  if (subcategory) record.subcategory = subcategory;
+
+  const typicalCause = optionalText(input.typicalCause, 500);
+  if (typicalCause) record.typicalCause = typicalCause;
+
+  const correctiveActions = optionalText(input.correctiveActions, MAX_TEXT);
+  if (correctiveActions) record.correctiveActions = correctiveActions;
+
+  if (Array.isArray(input.keywords)) {
+    const cleanKeywords = input.keywords
+      .filter((k): k is string => typeof k === 'string')
+      .map((k) => k.trim().slice(0, 64))
+      .filter((k) => k.length > 0)
+      .slice(0, 30);
+    if (cleanKeywords.length > 0) record.keywords = cleanKeywords;
+  }
+
   const stages = sanitizeStages(input.stages);
   if (stages.length > 0) record.stages = stages;
 
   return { ok: true, record: record as SanitizedStoppage };
 }
+

@@ -34,9 +34,11 @@ import {
   Info,
   SlidersHorizontal,
   Database,
+  Sparkles,
+  Tag,
 } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
-import { Operator, StoppageTypeItem, StoppageRecord } from '../types/manutrack';
+import { Operator, StoppageTypeItem, StoppageRecord, StoppageTemplate } from '../types/manutrack';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
 import {
   parseCSVStoppagesWithMapping,
@@ -56,6 +58,7 @@ import {
 interface PageAdminProps {
   operators: Operator[];
   stoppageTypes: StoppageTypeItem[];
+  stoppageTemplates?: StoppageTemplate[];
   stoppageRecords: StoppageRecord[];
   onAddOperator: (data: Omit<Operator, 'id' | 'active'>, pin: string) => Promise<void>;
   onUpdateOperator: (id: string, data: Partial<Operator> & { pin?: string }) => Promise<void>;
@@ -63,6 +66,9 @@ interface PageAdminProps {
   onAddStoppageType: (data: Omit<StoppageTypeItem, 'id' | 'active'>) => Promise<void>;
   onUpdateStoppageType: (id: string, data: Partial<StoppageTypeItem>) => Promise<void>;
   onDeleteStoppageType: (id: string) => Promise<void>;
+  onAddStoppageTemplate?: (data: Omit<StoppageTemplate, 'id' | 'active'>) => Promise<void>;
+  onUpdateStoppageTemplate?: (id: string, data: Partial<StoppageTemplate>) => Promise<void>;
+  onDeleteStoppageTemplate?: (id: string) => Promise<void>;
   onResetDefaults: () => Promise<void>;
   onBatchImportStoppages: (
     records: StoppageRecord[],
@@ -74,6 +80,7 @@ interface PageAdminProps {
 export const PageAdmin: React.FC<PageAdminProps> = ({
   operators,
   stoppageTypes,
+  stoppageTemplates = [],
   stoppageRecords,
   onAddOperator,
   onUpdateOperator,
@@ -81,10 +88,14 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   onAddStoppageType,
   onUpdateStoppageType,
   onDeleteStoppageType,
+  onAddStoppageTemplate,
+  onUpdateStoppageTemplate,
+  onDeleteStoppageTemplate,
   onResetDefaults,
   onBatchImportStoppages,
   onBackToHome,
 }) => {
+
   // Authentication State
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState<boolean>(true);
@@ -96,8 +107,8 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
-  // Tabs: 'operators' | 'stoppage_types' | 'import_csv' | 'security'
-  const [activeTab, setActiveTab] = useState<'operators' | 'stoppage_types' | 'import_csv' | 'security'>('operators');
+  // Tabs: 'operators' | 'stoppage_types' | 'stoppage_templates' | 'import_csv' | 'security'
+  const [activeTab, setActiveTab] = useState<'operators' | 'stoppage_types' | 'stoppage_templates' | 'import_csv' | 'security'>('operators');
 
   // Operator form state
   const [showOpForm, setShowOpForm] = useState(false);
@@ -117,6 +128,20 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   const [typeName, setTypeName] = useState('');
   const [typeDescription, setTypeDescription] = useState('');
   const [typeColor, setTypeColor] = useState('rose');
+
+  // Stoppage Templates form state (Catálogo de Modelos)
+  const [showTplForm, setShowTplForm] = useState(false);
+  const [editingTplId, setEditingTplId] = useState<string | null>(null);
+  const [tplTitle, setTplTitle] = useState('');
+  const [tplTypeId, setTplTypeId] = useState<string>('st-1');
+  const [tplSubcategory, setTplSubcategory] = useState('');
+  const [tplTypicalCause, setTplTypicalCause] = useState('');
+  const [tplDefaultDescription, setTplDefaultDescription] = useState('');
+  const [tplDefaultActions, setTplDefaultActions] = useState('');
+  const [tplKeywordsStr, setTplKeywordsStr] = useState('');
+  const [tplFilterType, setTplFilterType] = useState<string>('all');
+  const [isSavingTpl, setIsSavingTpl] = useState(false);
+
 
   // CSV Import State
   const [csvFileName, setCsvFileName] = useState<string | null>(null);
@@ -337,6 +362,80 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
     setShowTypeForm(false);
     setFormErrorMsg(null);
   };
+
+  // Stoppage Template Handlers
+  const resetTplForm = () => {
+    setEditingTplId(null);
+    setTplTitle('');
+    setTplTypeId(stoppageTypes[0]?.id || 'st-1');
+    setTplSubcategory('');
+    setTplTypicalCause('');
+    setTplDefaultDescription('');
+    setTplDefaultActions('');
+    setTplKeywordsStr('');
+    setShowTplForm(false);
+    setFormErrorMsg(null);
+  };
+
+  const handleStartEditTemplate = (tpl: StoppageTemplate) => {
+    setEditingTplId(tpl.id);
+    setTplTitle(tpl.title);
+    setTplTypeId(tpl.stoppageTypeId);
+    setTplSubcategory(tpl.subcategory);
+    setTplTypicalCause(tpl.typicalCause);
+    setTplDefaultDescription(tpl.defaultDescription);
+    setTplDefaultActions(tpl.defaultActions);
+    setTplKeywordsStr(Array.isArray(tpl.keywords) ? tpl.keywords.join(', ') : '');
+    setShowTplForm(true);
+    playIndustrialClick();
+  };
+
+  const handleSaveTemplate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tplTitle.trim()) {
+      setFormErrorMsg('Título do modelo é obrigatório.');
+      return;
+    }
+    setIsSavingTpl(true);
+    setFormErrorMsg(null);
+    try {
+      const keywords = tplKeywordsStr
+        .split(',')
+        .map((k) => k.trim().replace(/^#/, ''))
+        .filter((k) => k.length > 0);
+
+      if (editingTplId && onUpdateStoppageTemplate) {
+        await onUpdateStoppageTemplate(editingTplId, {
+          title: tplTitle.trim(),
+          stoppageTypeId: tplTypeId,
+          subcategory: tplSubcategory.trim(),
+          typicalCause: tplTypicalCause.trim(),
+          defaultDescription: tplDefaultDescription.trim(),
+          defaultActions: tplDefaultActions.trim(),
+          keywords,
+        });
+        showFeedback('Modelo de avaria atualizado com sucesso!');
+      } else if (onAddStoppageTemplate) {
+        await onAddStoppageTemplate({
+          title: tplTitle.trim(),
+          stoppageTypeId: tplTypeId,
+          subcategory: tplSubcategory.trim(),
+          typicalCause: tplTypicalCause.trim(),
+          defaultDescription: tplDefaultDescription.trim(),
+          defaultActions: tplDefaultActions.trim(),
+          keywords,
+        });
+        showFeedback('Novo modelo de avaria adicionado com sucesso!');
+      }
+      playSuccessChime();
+      resetTplForm();
+    } catch (err: unknown) {
+      setFormErrorMsg(err instanceof Error ? err.message : 'Erro ao gravar modelo');
+    } finally {
+      setIsSavingTpl(false);
+    }
+  };
+
 
   // CSV File Processing Core
   const processCsvFile = (file: File) => {
@@ -875,8 +974,8 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
           </div>
         )}
 
-        {/* 4 Tabs: Pessoal, Tipos de Avaria, Importar CSV e Segurança */}
-        <div className="mt-4 grid grid-cols-4 gap-1 rounded-xl bg-slate-900/90 p-1 border border-slate-800">
+        {/* 5 Tabs: Pessoal, Tipos de Avaria, Catálogo de Modelos, Importar CSV e Segurança */}
+        <div className="mt-4 grid grid-cols-3 sm:grid-cols-5 gap-1 rounded-xl bg-slate-900/90 p-1 border border-slate-800">
           <button
             type="button"
             onClick={() => {
@@ -906,7 +1005,23 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
             }`}
           >
             <Wrench className="h-3 w-3 shrink-0" />
-            <span className="truncate">Avarias ({stoppageTypes.length})</span>
+            <span className="truncate">Tipos ({stoppageTypes.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              playIndustrialClick();
+              setActiveTab('stoppage_templates');
+            }}
+            className={`flex items-center justify-center gap-1 rounded-lg py-2 px-1 text-[10px] sm:text-xs font-bold transition-all ${
+              activeTab === 'stoppage_templates'
+                ? 'bg-amber-500 text-slate-950 shadow-sm'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Sparkles className="h-3 w-3 shrink-0" />
+            <span className="truncate">Catálogo ({stoppageTemplates.length})</span>
           </button>
 
           <button
@@ -941,6 +1056,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
             <span className="truncate">Segurança</span>
           </button>
         </div>
+
       </div>
 
       {/* TAB 1: GESTÃO DE OPERADORES & PERMISSÕES */}
@@ -1365,7 +1481,324 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
         </div>
       )}
 
-      {/* TAB 3: IMPORTAÇÃO CSV DE DADOS DA VERSÃO ANTERIOR */}
+      {/* TAB: CATÁLOGO DE MODELOS E CAUSAS TÍPICAS */}
+      {activeTab === 'stoppage_templates' && (
+        <div className="my-4 flex-1 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-sky-400" />
+                <span>Catálogo de Modelos Padronizados</span>
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Causas típicas, subcategorias e ações sugeridas automaticamente ao fechar paragens.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                playIndustrialClick();
+                if (showTplForm) {
+                  resetTplForm();
+                } else {
+                  resetTplForm();
+                  setShowTplForm(true);
+                }
+              }}
+              className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400 transition-colors shadow-sm"
+            >
+              {showTplForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+              <span>{showTplForm ? 'Fechar' : 'Novo Modelo'}</span>
+            </button>
+          </div>
+
+          {/* Type Filter Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mr-1">Filtrar:</span>
+            <button
+              type="button"
+              onClick={() => {
+                playIndustrialClick();
+                setTplFilterType('all');
+              }}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                tplFilterType === 'all'
+                  ? 'bg-amber-500 text-slate-950 shadow-sm'
+                  : 'bg-slate-800 text-slate-400 hover:text-white'
+              }`}
+            >
+              Todos ({stoppageTemplates.length})
+            </button>
+            {stoppageTypes.map((st) => {
+              const count = stoppageTemplates.filter(
+                (t) => t.stoppageTypeId === st.id || t.stoppageTypeId === st.name
+              ).length;
+              return (
+                <button
+                  key={st.id}
+                  type="button"
+                  onClick={() => {
+                    playIndustrialClick();
+                    setTplFilterType(st.id);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${
+                    tplFilterType === st.id
+                      ? 'bg-amber-500 text-slate-950 shadow-sm'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {st.name} ({count})
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Create / Edit Template Form */}
+          {showTplForm && (
+            <div className="rounded-2xl border border-sky-500/40 bg-slate-900 p-4 shadow-xl animate-in fade-in">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
+                  <Sparkles className="h-4 w-4" />
+                  <span>{editingTplId ? 'Editar Modelo Padronizado' : 'Novo Modelo de Avaria'}</span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={resetTplForm}
+                  className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveTemplate} className="mt-3 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                      Tipo de Paragem Associado <span className="text-rose-400">*</span>
+                    </label>
+                    <select
+                      value={tplTypeId}
+                      onChange={(e) => setTplTypeId(e.target.value)}
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-bold text-white focus:border-sky-500 focus:outline-none"
+                    >
+                      {stoppageTypes.map((st) => (
+                        <option key={st.id} value={st.id}>
+                          {st.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                      Título do Modelo <span className="text-rose-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={tplTitle}
+                      onChange={(e) => setTplTitle(e.target.value)}
+                      placeholder="Ex: Rolamento Gripado / Danificado"
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                      Subcategoria Técnica
+                    </label>
+                    <input
+                      type="text"
+                      value={tplSubcategory}
+                      onChange={(e) => setTplSubcategory(e.target.value)}
+                      placeholder="Ex: Transmissão Mecânica, Automação..."
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                      Causa Típica Identificada
+                    </label>
+                    <input
+                      type="text"
+                      value={tplTypicalCause}
+                      onChange={(e) => setTplTypicalCause(e.target.value)}
+                      placeholder="Ex: Falta de lubrificação periódica..."
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Descrição Padrão Sugerida
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={tplDefaultDescription}
+                    onChange={(e) => setTplDefaultDescription(e.target.value)}
+                    placeholder="Descrição detalhada pré-preenchida no fecho da paragem..."
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Ações Corretivas Recomendadas
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={tplDefaultActions}
+                    onChange={(e) => setTplDefaultActions(e.target.value)}
+                    placeholder="Ações típicas pré-preenchidas para o operador..."
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-emerald-300 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
+                    Palavras-Chave Semânticas (separadas por vírgula)
+                  </label>
+                  <input
+                    type="text"
+                    value={tplKeywordsStr}
+                    onChange={(e) => setTplKeywordsStr(e.target.value)}
+                    placeholder="Ex: rolamento, vibração, veio, lubrificação, mancal"
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-sky-300 placeholder-slate-500 focus:border-sky-500 focus:outline-none font-mono"
+                  />
+                  <span className="text-[10px] text-slate-400 mt-0.5 block">
+                    Tags utilizadas para indexação, relatórios inteligentes e futuras análises semânticas de contexto.
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 pt-2">
+                  <button
+                    type="submit"
+                    disabled={isSavingTpl}
+                    className="flex-1 rounded-xl bg-sky-500 py-2.5 text-xs font-bold text-white hover:bg-sky-400 active:scale-[0.98] transition-all shadow-md"
+                  >
+                    {isSavingTpl ? 'A guardar...' : editingTplId ? 'Atualizar Modelo' : 'Criar Modelo'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetTplForm}
+                    className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-700"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* Templates Cards List */}
+          <div className="space-y-2.5 max-h-[60vh] overflow-y-auto pr-1">
+            {stoppageTemplates
+              .filter((tpl) => {
+                if (tplFilterType === 'all') return true;
+                const matchedType = stoppageTypes.find((st) => st.id === tplFilterType);
+                return (
+                  tpl.stoppageTypeId === tplFilterType ||
+                  (matchedType && tpl.stoppageTypeId === matchedType.name)
+                );
+              })
+              .map((tpl) => {
+                const parentType = stoppageTypes.find(
+                  (st) => st.id === tpl.stoppageTypeId || st.name === tpl.stoppageTypeId
+                );
+                return (
+                  <div
+                    key={tpl.id}
+                    className="rounded-xl border border-slate-800 bg-slate-900/80 p-3.5 hover:border-slate-700 transition-all space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="text-xs font-bold text-white">{tpl.title}</h4>
+                          {parentType && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-amber-300 border border-slate-700">
+                              {parentType.name}
+                            </span>
+                          )}
+                          {tpl.subcategory && (
+                            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-sky-950 text-sky-300 border border-sky-800/60">
+                              {tpl.subcategory}
+                            </span>
+                          )}
+                        </div>
+                        {tpl.typicalCause && (
+                          <p className="text-[11px] text-amber-400/90 font-medium mt-1">
+                            <span className="text-slate-400">Causa:</span> {tpl.typicalCause}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditTemplate(tpl)}
+                          className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-sky-400 transition-colors"
+                          title="Editar modelo"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (window.confirm(`Tem a certeza que deseja remover o modelo "${tpl.title}"?`)) {
+                              if (onDeleteStoppageTemplate) {
+                                await onDeleteStoppageTemplate(tpl.id);
+                                showFeedback(`Modelo "${tpl.title}" removido com sucesso.`);
+                              }
+                            }
+                          }}
+                          className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-950 hover:text-rose-400 transition-colors"
+                          title="Remover modelo"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {tpl.defaultDescription && (
+                      <p className="text-[11px] text-slate-300 bg-slate-950/60 p-2 rounded-lg border border-slate-800/80">
+                        <span className="text-slate-400 font-semibold block text-[10px] uppercase">Descrição Padrão:</span>
+                        {tpl.defaultDescription}
+                      </p>
+                    )}
+
+                    {tpl.defaultActions && (
+                      <p className="text-[11px] text-emerald-300/90 bg-emerald-950/20 p-2 rounded-lg border border-emerald-900/30">
+                        <span className="text-emerald-400/80 font-semibold block text-[10px] uppercase">Ação Recomendada:</span>
+                        {tpl.defaultActions}
+                      </p>
+                    )}
+
+                    {tpl.keywords && tpl.keywords.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1 pt-1">
+                        <Tag className="h-3 w-3 text-sky-400 shrink-0" />
+                        {tpl.keywords.map((kw, i) => (
+                          <span
+                            key={i}
+                            className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-sky-950/80 text-sky-300 border border-sky-800/60"
+                          >
+                            #{kw}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: IMPORTAÇÃO CSV DE DADOS DA VERSÃO ANTERIOR */}
+
       {activeTab === 'import_csv' && (
         <div className="my-4 flex-1 space-y-4">
           {/* Visual Step Pipeline Banner */}

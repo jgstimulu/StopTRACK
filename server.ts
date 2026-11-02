@@ -566,17 +566,19 @@ app.post('/api/operators/logout', async (req, res) => {
 // 2. Complete application state shared by every workstation.
 app.get('/api/state', async (_req, res) => {
   try {
-    const [operators, stoppageTypes, activeDowntimes, stoppages] = await Promise.all([
+    const [operators, stoppageTypes, activeDowntimes, stoppages, stoppageTemplates] = await Promise.all([
       supabaseStore.getOperators(),
       supabaseStore.getStoppageTypes(),
       supabaseStore.getActiveDowntimes(),
       supabaseStore.getStoppages(),
+      supabaseStore.getStoppageTemplates(),
     ]);
     res.json({
       operators: publicOperators(operators),
       stoppageTypes,
       activeDowntimes,
       stoppages,
+      stoppageTemplates,
       serverTime: Date.now(),
       updatedAt: Date.now(),
     });
@@ -584,6 +586,7 @@ app.get('/api/state', async (_req, res) => {
     return respondWithStoreError(res, error);
   }
 });
+
 
 // 3. Active stoppages are keyed by a normalized machine id and updated transactionally.
 app.get('/api/active-stoppages', async (_req, res) => {
@@ -1230,6 +1233,138 @@ app.delete('/api/stoppage-types/:id', requireAdminAuth, async (req, res) => {
     return respondWithStoreError(res, error);
   }
 });
+
+// 7.1. Stoppage Templates Management (Standardized Catalog)
+app.get('/api/stoppage-templates', async (_req, res) => {
+  try {
+    res.json(await supabaseStore.getStoppageTemplates());
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.post('/api/stoppage-templates', requireAdminAuth, async (req, res) => {
+  const {
+    stoppageTypeId,
+    title,
+    subcategory,
+    typicalCause,
+    defaultDescription,
+    defaultActions,
+    keywords,
+    displayOrder,
+  } = req.body || {};
+
+  if (typeof title !== 'string' || !title.trim() || title.trim().length > 128) {
+    return res.status(400).json({ error: 'Título do modelo de avaria é obrigatório.' });
+  }
+  if (typeof stoppageTypeId !== 'string' || !stoppageTypeId.trim()) {
+    return res.status(400).json({ error: 'Tipo de paragem associado é obrigatório.' });
+  }
+
+  const cleanKeywords = Array.isArray(keywords)
+    ? keywords.filter((k): k is string => typeof k === 'string').map((k) => k.trim()).filter((k) => k.length > 0)
+    : [];
+
+  const newTemplate = {
+    id: `tpl-${crypto.randomUUID()}`,
+    stoppageTypeId: stoppageTypeId.trim(),
+    title: title.trim(),
+    subcategory: typeof subcategory === 'string' ? subcategory.trim().slice(0, 128) : '',
+    typicalCause: typeof typicalCause === 'string' ? typicalCause.trim().slice(0, 500) : '',
+    defaultDescription: typeof defaultDescription === 'string' ? defaultDescription.trim().slice(0, 5000) : '',
+    defaultActions: typeof defaultActions === 'string' ? defaultActions.trim().slice(0, 5000) : '',
+    keywords: cleanKeywords,
+    active: true,
+    displayOrder: typeof displayOrder === 'number' && Number.isFinite(displayOrder) ? displayOrder : 0,
+  };
+
+  try {
+    const created = await supabaseStore.createStoppageTemplate(newTemplate);
+    res.status(201).json(created);
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.put('/api/stoppage-templates/:id', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador de modelo inválido.' });
+  }
+  const {
+    title,
+    stoppageTypeId,
+    subcategory,
+    typicalCause,
+    defaultDescription,
+    defaultActions,
+    keywords,
+    active,
+    displayOrder,
+  } = req.body || {};
+
+  const changes: Record<string, unknown> = {};
+
+  if (title !== undefined) {
+    if (typeof title !== 'string' || !title.trim() || title.trim().length > 128) {
+      return res.status(400).json({ error: 'Título inválido.' });
+    }
+    changes.title = title.trim();
+  }
+  if (stoppageTypeId !== undefined) {
+    if (typeof stoppageTypeId !== 'string' || !stoppageTypeId.trim()) {
+      return res.status(400).json({ error: 'Tipo de paragem inválido.' });
+    }
+    changes.stoppageTypeId = stoppageTypeId.trim();
+  }
+  if (subcategory !== undefined) {
+    changes.subcategory = typeof subcategory === 'string' ? subcategory.trim().slice(0, 128) : '';
+  }
+  if (typicalCause !== undefined) {
+    changes.typicalCause = typeof typicalCause === 'string' ? typicalCause.trim().slice(0, 500) : '';
+  }
+  if (defaultDescription !== undefined) {
+    changes.defaultDescription = typeof defaultDescription === 'string' ? defaultDescription.trim().slice(0, 5000) : '';
+  }
+  if (defaultActions !== undefined) {
+    changes.defaultActions = typeof defaultActions === 'string' ? defaultActions.trim().slice(0, 5000) : '';
+  }
+  if (keywords !== undefined && Array.isArray(keywords)) {
+    changes.keywords = keywords
+      .filter((k): k is string => typeof k === 'string')
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0);
+  }
+  if (active !== undefined) {
+    changes.active = Boolean(active);
+  }
+  if (displayOrder !== undefined) {
+    changes.displayOrder = Number(displayOrder) || 0;
+  }
+
+  try {
+    const updated = await supabaseStore.updateStoppageTemplate(id, changes);
+    if (!updated) return res.status(404).json({ error: 'Modelo de avaria não encontrado.' });
+    res.json(updated);
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.delete('/api/stoppage-templates/:id', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ error: 'Identificador de modelo inválido.' });
+  }
+  try {
+    await supabaseStore.deleteStoppageTemplate(id);
+    res.json({ success: true, id });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
 
 // 8. Reset to defaults (Protected by requireAdminAuth)
 app.post('/api/reset-defaults', requireAdminAuth, async (_req, res) => {
