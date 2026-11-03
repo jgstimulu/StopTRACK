@@ -1120,7 +1120,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                     if (errors.pin) setErrors((prev) => ({ ...prev, pin: '' }));
                     if (errors.form) setErrors((prev) => ({ ...prev, form: '' }));
                   }}
-                  placeholder="Introduza o PIN (ex.: 2026)..."
+                  placeholder="Introduza o PIN do operador..."
                   className={`w-full rounded-xl border pl-9 pr-3 py-2 text-xs font-mono font-bold tracking-widest text-white focus:outline-none ${
                     errors.pin
                       ? 'border-rose-500 bg-rose-950/30'

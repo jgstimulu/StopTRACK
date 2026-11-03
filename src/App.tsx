@@ -44,6 +44,13 @@ import {
   apiDeleteStoppageTemplate,
   apiResetDefaults,
   apiOperatorLogin,
+  apiAdminLogin,
+  apiAdminLogout,
+  apiOperatorLogout,
+  ApiError,
+  hasStoredSession,
+  clearAdminToken,
+  clearOperatorToken,
 } from './services/api';
 
 
@@ -57,7 +64,8 @@ import { PageAdmin } from './pages/PageAdmin';
 import { PageActiveMonitoring } from './pages/PageActiveMonitoring';
 import { PageManualEntry } from './pages/PageManualEntry';
 import { ShareModal } from './components/ShareModal';
-import { Smartphone, Monitor, CheckCircle, Server, Settings2, QrCode, Cloud, RefreshCw, Activity, Layers, Wrench } from 'lucide-react';
+import { AppLoginGate } from './components/AppLoginGate';
+import { Smartphone, Monitor, CheckCircle, Server, Settings2, QrCode, Cloud, RefreshCw, Activity, Layers, Wrench, LogOut } from 'lucide-react';
 
 export default function App() {
   // Navigation Page
@@ -87,6 +95,8 @@ export default function App() {
   });
 
   const [isBackendConnected, setIsBackendConnected] = useState<boolean>(true);
+  const [requiresLogin, setRequiresLogin] = useState<boolean>(() => !hasStoredSession());
+  const [isBootstrapping, setIsBootstrapping] = useState<boolean>(() => hasStoredSession());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const cloudStateVersionRef = useRef(0);
   const isSavingStoppageRef = useRef(false);
@@ -135,6 +145,22 @@ export default function App() {
 
   // Notification Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const clearSensitiveState = () => {
+    setOperators([]);
+    setActiveDowntimes([]);
+    setRecords([]);
+    setFocusedDowntime(null);
+    setStopEndTimestamp(0);
+    setCurrentOperator('');
+    try {
+      localStorage.removeItem('manutrack_stoppages_history');
+      localStorage.removeItem('manutrack_active_downtimes');
+      localStorage.removeItem('manutrack_operators_cache');
+    } catch {
+      // Storage unavailable
+    }
+  };
 
   // Periodic Cloud Sync Function with Bidirectional Resilience (Keep all devices aligned & never wipe data)
   const syncWithCloud = async () => {
@@ -203,15 +229,24 @@ export default function App() {
         localStorage.setItem('manutrack_stoppages_history', JSON.stringify(mergedRecords));
 
       }
-    } catch {
+    } catch (error) {
       setIsBackendConnected(false);
+      if (error instanceof ApiError && error.status === 401) {
+        clearAdminToken();
+        clearOperatorToken();
+        clearSensitiveState();
+        setRequiresLogin(true);
+      }
     } finally {
       setIsSyncing(false);
+      setIsBootstrapping(false);
     }
   };
 
   // The protected Express API is the single persistence path; reads are refreshed from it.
   useEffect(() => {
+    if (requiresLogin) return;
+
     localStorage.removeItem('manutrack_operators_cache');
     syncWithCloud();
 
@@ -226,7 +261,7 @@ export default function App() {
       clearInterval(interval);
       window.removeEventListener('focus', onFocus);
     };
-  }, []);
+  }, [requiresLogin]);
 
   // Sync current operator to localStorage
   useEffect(() => {
@@ -552,6 +587,53 @@ export default function App() {
     setToastMessage('Sessão StopTRACK em espera.');
   };
 
+  const handleOperatorAppLogin = async (operatorId: string, pin: string) => {
+    await apiOperatorLogin(operatorId, pin);
+    clearSensitiveState();
+    setIsBootstrapping(true);
+    setRequiresLogin(false);
+  };
+
+  const handleAdminAppLogin = async (email: string, password: string) => {
+    await apiAdminLogin(email, password);
+    clearSensitiveState();
+    setIsBootstrapping(true);
+    setRequiresLogin(false);
+  };
+
+  const handleLogout = async () => {
+    await Promise.allSettled([apiAdminLogout(), apiOperatorLogout()]);
+    clearSensitiveState();
+    setRequiresLogin(true);
+    setCurrentPage('home');
+    setStoppageTypes(INITIAL_STOPPAGE_TYPES);
+    setStoppageTemplates(INITIAL_STOPPAGE_TEMPLATES);
+    localStorage.removeItem('manutrack_stoppage_types_cache');
+    localStorage.removeItem('manutrack_stoppage_templates_cache');
+  };
+
+  if (isBootstrapping) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-300 antialiased">
+        <div className="flex flex-col items-center gap-3">
+          <RefreshCw className="h-8 w-8 animate-spin text-amber-400" />
+          <p className="text-xs font-semibold uppercase tracking-wider">A validar sessão...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (requiresLogin) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-start bg-slate-950 text-slate-100 antialiased selection:bg-amber-500 selection:text-slate-950">
+        <AppLoginGate
+          onOperatorLogin={handleOperatorAppLogin}
+          onAdminLogin={handleAdminAppLogin}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-start antialiased selection:bg-amber-500 selection:text-slate-950">
       {/* Desktop Top Toolbar (Frame toggle, Cloud status, QR code share) */}
@@ -601,6 +683,20 @@ export default function App() {
           >
             <Settings2 className="h-3.5 w-3.5 text-amber-400" />
             <span>Backend</span>
+          </button>
+
+          {/* End the current operator/admin session */}
+          <button
+            type="button"
+            onClick={() => {
+              playIndustrialClick();
+              void handleLogout();
+            }}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-slate-300 hover:border-rose-500/60 hover:bg-rose-950/40 hover:text-white transition-colors"
+            title="Terminar sessão"
+          >
+            <LogOut className="h-3.5 w-3.5 text-rose-400" />
+            <span className="hidden sm:inline">Sair</span>
           </button>
 
           {/* Mobile frame toggle for desktop testing */}

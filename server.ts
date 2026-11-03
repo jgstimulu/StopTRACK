@@ -376,10 +376,40 @@ function requireOperatorPermission(permission: 'canStart' | 'canClose') {
   };
 }
 
+function requireSession(req: express.Request, res: express.Response, next: express.NextFunction) {
+  void getSession(req).then((session) => {
+    if (!session) {
+      res.status(401).json({ error: 'Sessão inválida ou expirada. Inicie sessão para continuar.' });
+      return;
+    }
+    next();
+  }).catch((error) => respondWithStoreError(res, error));
+}
+
 app.use('/api', (req, res, next) => {
   void initializeSupabaseStorage().then(() => next()).catch((error) => respondWithStoreError(res, error));
 });
 // REST API ROUTES
+
+// Public operator picker used by the login screen. Only non-sensitive fields are exposed.
+app.get('/api/auth/operators', async (_req, res) => {
+  try {
+    const operators = await supabaseStore.getOperators();
+    res.json(
+      publicOperators(operators)
+        .filter((operator: any) => operator.active)
+        .map((operator: any) => ({
+          id: operator.id,
+          name: operator.name,
+          role: operator.role,
+          canStart: operator.canStart,
+          canClose: operator.canClose,
+        }))
+    );
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
 
 // 1. Admin Authentication Routes
 app.post('/api/admin/login', async (req, res) => {
@@ -563,8 +593,8 @@ app.post('/api/operators/logout', async (req, res) => {
   }
 });
 
-// 2. Complete application state shared by every workstation.
-app.get('/api/state', async (_req, res) => {
+// 2. Complete application state shared by every workstation. Requires an authenticated session.
+app.get('/api/state', requireSession, async (_req, res) => {
   try {
     const [operators, stoppageTypes, activeDowntimes, stoppages, stoppageTemplates] = await Promise.all([
       supabaseStore.getOperators(),
@@ -589,7 +619,7 @@ app.get('/api/state', async (_req, res) => {
 
 
 // 3. Active stoppages are keyed by a normalized machine id and updated transactionally.
-app.get('/api/active-stoppages', async (_req, res) => {
+app.get('/api/active-stoppages', requireSession, async (_req, res) => {
   try {
     res.json(await supabaseStore.getActiveDowntimes());
   } catch (error) {
@@ -667,8 +697,8 @@ app.delete('/api/active-stoppages/:machineId', requireOperatorPermission('canClo
   }
 });
 
-// 4. Historical stoppage records.
-app.get('/api/stoppages', async (_req, res) => {
+// 4. Historical stoppage records. Requires an authenticated session.
+app.get('/api/stoppages', requireSession, async (_req, res) => {
   try {
     res.json(await supabaseStore.getStoppages());
   } catch (error) {
@@ -759,14 +789,6 @@ async function verifyAuthorizationPin(providedPin: string): Promise<boolean> {
           verifySecret(pin, operator.pinSalt, operator.pinHash)
       );
     if (operatorPinValid) return true;
-
-    // Check if initial default PIN 2026 is allowed when no operator with PIN is configured
-    const hasAnyOperatorWithPin = operators.some(
-      (o) => o.active && o.canClose && o.pinSalt && o.pinHash
-    );
-    if (!hasAnyOperatorWithPin && pin === '2026') {
-      return true;
-    }
   } catch (err) {
     console.error('Error fetching operators for PIN verification:', err);
   }
@@ -1006,7 +1028,7 @@ app.post('/api/stoppages/batch-import', requireAdminAuth, async (req, res) => {
 });
 
 // 6. Operators Management (Protected by requireAdminAuth)
-app.get('/api/operators', async (_req, res) => {
+app.get('/api/operators', requireSession, async (_req, res) => {
   try {
     res.json(publicOperators(await supabaseStore.getOperators()));
   } catch (error) {
