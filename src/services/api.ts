@@ -15,6 +15,24 @@ export interface SharedPlantState {
 const TOKEN_KEY = 'manutrack_admin_token';
 const OPERATOR_TOKEN_KEY = 'manutrack_operator_token';
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+export interface LoginOperator {
+  id: string;
+  name: string;
+  role: string;
+  canStart: boolean;
+  canClose: boolean;
+}
+
 export function getAdminToken(): string | null {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
@@ -35,6 +53,15 @@ export function clearAdminToken(): void {
 export function getOperatorToken(): string | null {
   if (typeof window === 'undefined') return null;
   return sessionStorage.getItem(OPERATOR_TOKEN_KEY);
+}
+
+export function clearOperatorToken(): void {
+  if (typeof window === 'undefined') return;
+  sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
+}
+
+export function hasStoredSession(): boolean {
+  return Boolean(getAdminToken() || getOperatorToken());
 }
 
 export async function apiOperatorLogin(operatorId: string, pin: string): Promise<void> {
@@ -69,9 +96,9 @@ function getOperatorHeaders(): Record<string, string> {
   return headers;
 }
 
-async function responseError(res: Response, fallback: string): Promise<Error> {
+async function responseError(res: Response, fallback: string): Promise<ApiError> {
   const data = await res.json().catch(() => ({}));
-  return new Error(data.error || fallback);
+  return new ApiError(data.error || fallback, res.status);
 }
 
 export async function apiAdminLogin(
@@ -133,10 +160,46 @@ export async function apiAdminLogout(): Promise<void> {
   }
 }
 
-export async function fetchSharedState(): Promise<SharedPlantState> {
-  const res = await fetch('/api/state');
-  if (!res.ok) throw new Error('Falha ao comunicar com a nuvem central');
+export async function apiOperatorLogout(): Promise<void> {
+  const token = getOperatorToken();
+  try {
+    if (token) {
+      await fetch('/api/operators/logout', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token },
+      });
+    }
+  } finally {
+    clearOperatorToken();
+  }
+}
+
+export async function fetchLoginOperators(): Promise<LoginOperator[]> {
+  const res = await fetch('/api/auth/operators');
+  if (!res.ok) throw await responseError(res, 'Falha ao carregar a lista de operadores.');
   return await res.json();
+}
+
+export async function fetchSharedState(): Promise<SharedPlantState> {
+  const tokens = [getOperatorToken(), getAdminToken()].filter((token): token is string => Boolean(token));
+  if (!tokens.length) {
+    throw new ApiError('Sessão necessária. Inicie sessão para continuar.', 401);
+  }
+
+  let lastError: ApiError = new ApiError('Falha ao comunicar com a nuvem central', 500);
+  for (const token of tokens) {
+    const res = await fetch('/api/state', {
+      headers: { Authorization: 'Bearer ' + token },
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+    lastError = await responseError(res, 'Falha ao comunicar com a nuvem central');
+    if (res.status !== 401) {
+      throw lastError;
+    }
+  }
+  throw lastError;
 }
 
 export async function apiStartActiveDowntime(downtime: ActiveDowntime): Promise<ActiveDowntime> {
