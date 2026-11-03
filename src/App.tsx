@@ -581,10 +581,23 @@ export default function App() {
     setCurrentPage('timing');
   };
 
-  // Exit button on Page 1 or Page 2
-  const handleExitApp = () => {
+  // Ends the current session and returns to the login screen.
+  const handleLogout = async () => {
+    // Start the server-side logout while the tokens still exist.
+    const logoutRequests = [apiAdminLogout(), apiOperatorLogout()];
+
+    // Clear the local session immediately so the UI never waits on the network.
+    clearAdminToken();
+    clearOperatorToken();
+    clearSensitiveState();
+    setRequiresLogin(true);
     setCurrentPage('home');
-    setToastMessage('Sessão StopTRACK em espera.');
+    setStoppageTypes(INITIAL_STOPPAGE_TYPES);
+    setStoppageTemplates(INITIAL_STOPPAGE_TEMPLATES);
+    localStorage.removeItem('manutrack_stoppage_types_cache');
+    localStorage.removeItem('manutrack_stoppage_templates_cache');
+
+    await Promise.allSettled(logoutRequests);
   };
 
   const handleOperatorAppLogin = async (operatorId: string, pin: string) => {
@@ -601,15 +614,9 @@ export default function App() {
     setRequiresLogin(false);
   };
 
-  const handleLogout = async () => {
-    await Promise.allSettled([apiAdminLogout(), apiOperatorLogout()]);
-    clearSensitiveState();
-    setRequiresLogin(true);
-    setCurrentPage('home');
-    setStoppageTypes(INITIAL_STOPPAGE_TYPES);
-    setStoppageTemplates(INITIAL_STOPPAGE_TEMPLATES);
-    localStorage.removeItem('manutrack_stoppage_types_cache');
-    localStorage.removeItem('manutrack_stoppage_templates_cache');
+  // The home screen "Sair" button ends the session.
+  const handleExitApp = () => {
+    void handleLogout();
   };
 
   if (isBootstrapping) {
