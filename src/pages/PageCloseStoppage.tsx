@@ -34,12 +34,17 @@ import {
   StoppageStage,
   StoppageStageLevel,
   StoppageTemplate,
+  MechanicalAdjustmentItem,
 } from '../types/manutrack';
 import { StagesEditor } from '../components/StagesEditor';
 import { INITIAL_STOPPAGE_TYPES } from '../data/initialData';
 import { formatDurationMs, formatTimeOnly } from '../utils/formatters';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
 import { getShiftInfo } from '../utils/shift';
+import {
+  StoppageTaxonomySelector,
+  buildTaxonomySummary,
+} from '../components/StoppageTaxonomySelector';
 
 interface PageCloseStoppageProps {
   activeDowntime: ActiveDowntime;
@@ -96,10 +101,6 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
   const activeOps = availableOperators.filter((o) => o.active);
   const starterOps = activeOps.filter((o) => o.canStart);
 
-  const defaultStoppageType = availableStoppageTypes.length > 0
-    ? availableStoppageTypes[0].name
-    : 'Avaria Mecânica';
-
   // Per user instruction: No automatic pre-selection of names, fields strictly mandatory!
   // initiatedBy takes whatever was explicitly chosen at start, or empty string.
   const [initiatedBy, setInitiatedBy] = useState<string>(activeDowntime.initiatedBy || '');
@@ -110,14 +111,26 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
     Boolean(initiatedBy && !activeOps.some((o) => o.name === initiatedBy))
   );
 
-  const [stoppageType, setStoppageType] = useState<string>(defaultStoppageType);
+  // Default to standard 'Afinação Mola'
+  const [stoppageType, setStoppageType] = useState<string>('Afinação Mola');
+  const [springAdjustments, setSpringAdjustments] = useState<string[]>([]);
+  const [mechanicalAdjustments, setMechanicalAdjustments] = useState<MechanicalAdjustmentItem[]>([]);
   const [priority, setPriority] = useState<StoppagePriority>('Média');
   const [status, setStatus] = useState<StoppageStatus>('Resolvido');
-  // "A máquina parou?" — resposta simples com um tique (por defeito: parou).
+  // "A máquina parou?" — por defeito: parou (ou não para afinação mola)
   const [machineStopped, setMachineStopped] = useState<boolean>(true);
   const [stoppageDescription, setStoppageDescription] = useState<string>('');
   const [actionsTaken, setActionsTaken] = useState<string>('');
   const [otherObservations, setOtherObservations] = useState<string>('');
+
+  // Initial pre-population of description and actions
+  useEffect(() => {
+    if (!stoppageDescription && !actionsTaken) {
+      const summary = buildTaxonomySummary('Afinação Mola', [], []);
+      setStoppageDescription(summary.description);
+      setActionsTaken(summary.actions);
+    }
+  }, []);
 
   // Padronização e Modelos
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
@@ -277,6 +290,8 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
       return;
     }
 
+    const isTuning = stoppageType === 'Afinação Mola' || stoppageType === 'Afinação Mecânica';
+
     const record: StoppageRecord = {
       id: `stop-${Date.now()}-${activeDowntime.machineId}`,
       machineId: activeDowntime.machineId,
@@ -291,7 +306,10 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
       shift: shift.trim(),
       priority,
       status,
-      machineStopped,
+      machineStopped: stoppageType === 'Avaria Mecânica' ? true : machineStopped,
+      isTuningIntervention: isTuning,
+      springAdjustments: stoppageType === 'Afinação Mola' ? springAdjustments : undefined,
+      mechanicalAdjustments: stoppageType === 'Afinação Mecânica' ? mechanicalAdjustments : undefined,
       initiatedBy: initiatedBy.trim(),
       closedBy: closedBy.trim(),
       stoppageType: stoppageType,
@@ -563,328 +581,96 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
           )}
         </div>
 
-        {/* 3. Tipo de Paragem */}
-        <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-3.5 shadow-sm">
-          <div className="flex items-center justify-between">
-            <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
-              <Layers className="h-3.5 w-3.5 text-sky-400" />
-              <span>Tipo de paragem <span className="text-rose-400">*</span></span>
-            </label>
-            {onOpenAdmin && (
-              <button
-                type="button"
-                onClick={onOpenAdmin}
-                title="Configurar tipos de avaria no backend"
-                className="text-[11px] font-medium text-amber-400 hover:text-amber-300"
-              >
-                + Gerir tipos
-              </button>
-            )}
-          </div>
-          <div className="mt-2">
-            <select
-              value={stoppageType}
-              onChange={(e) => handleTypeChange(e.target.value)}
-              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs font-semibold text-white focus:border-sky-500 focus:outline-none"
-            >
-              {availableStoppageTypes.map((st) => (
-                <option key={st.id || st.name} value={st.name} className="bg-slate-900 text-white">
-                  {st.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+        {/* 3. Submenu e Taxonomia Padronizada (Afinação Mola, Afinação Mecânica, Avaria Mecânica, Outro) */}
+        <StoppageTaxonomySelector
+          stoppageType={stoppageType}
+          onTypeChange={(newType) => {
+            setStoppageType(newType);
+            const summary = buildTaxonomySummary(
+              newType,
+              newType === 'Afinação Mola' ? springAdjustments : [],
+              newType === 'Afinação Mecânica' ? mechanicalAdjustments : []
+            );
+            setStoppageDescription(summary.description);
+            setActionsTaken(summary.actions);
+          }}
+          availableStoppageTypes={availableStoppageTypes}
+          springAdjustments={springAdjustments}
+          onSpringAdjustmentsChange={setSpringAdjustments}
+          mechanicalAdjustments={mechanicalAdjustments}
+          onMechanicalAdjustmentsChange={setMechanicalAdjustments}
+          machineStopped={machineStopped}
+          onMachineStoppedChange={setMachineStopped}
+          onAutoGenerateSummary={(desc, acts) => {
+            setStoppageDescription(desc);
+            setActionsTaken(acts);
+          }}
+          stoppageDescription={stoppageDescription}
+          actionsTaken={actionsTaken}
+        />
 
-        {/* 4. Padronização Semântica & Modelos (Causa Típica, Motivo e Ação Vinculados) */}
-        <div className="rounded-xl border border-sky-500/40 bg-sky-950/20 p-4 shadow-sm space-y-3.5">
-          <div className="flex items-center justify-between border-b border-sky-800/40 pb-2">
-            <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-sky-400" />
-              <span className="text-xs font-bold uppercase tracking-wider text-sky-200">
-                Modelos Padronizados & Causa Típica
-              </span>
-            </div>
-            <span className="text-[10px] text-sky-300 bg-sky-900/60 px-2 py-0.5 rounded font-mono border border-sky-700/50">
-              Vinculação Direta & Editável
+        {/* 4. Descrição da Paragem & Ação Corretiva (Vinculadas e Editáveis) */}
+        <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-4 shadow-sm space-y-3.5">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-200">
+              Descrição e Ação Realizada
+            </span>
+            <span className="text-[10px] text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30 font-mono">
+              Sugestão Automática & 100% Editável
             </span>
           </div>
 
-          {matchingTemplates.length > 0 ? (
-            <div className="space-y-3">
-              {/* Template selector pills */}
-              <div>
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
-                  Selecione o Modelo de Referência ({matchingTemplates.length} disponíveis):
-                </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {matchingTemplates.map((tpl) => (
-                    <button
-                      key={tpl.id}
-                      type="button"
-                      onClick={() => {
-                        playIndustrialClick();
-                        applyTemplate(tpl);
-                      }}
-                      className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all text-left flex items-center gap-1.5 ${
-                        selectedTemplateId === tpl.id
-                          ? 'bg-sky-500 text-white shadow-sm ring-1 ring-sky-300 font-bold'
-                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700'
-                      }`}
-                    >
-                      <span>{tpl.title}</span>
-                      {selectedTemplateId === tpl.id && <Check className="h-3 w-3 shrink-0" />}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      playIndustrialClick();
-                      setSelectedTemplateId('custom');
-                    }}
-                    className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all text-left ${
-                      selectedTemplateId === 'custom'
-                        ? 'bg-slate-700 text-white ring-1 ring-slate-400 font-bold'
-                        : 'bg-slate-900/60 text-slate-400 hover:bg-slate-800 border border-dashed border-slate-700'
-                    }`}
-                  >
-                    Personalizado / Manual
-                  </button>
-                </div>
-              </div>
-
-              {/* Banner of active template link */}
-              {currentActiveTemplate && selectedTemplateId !== 'custom' && (
-                <div className="flex items-center justify-between text-[11px] text-sky-200 bg-sky-900/30 border border-sky-700/50 rounded-lg px-2.5 py-1.5">
-                  <span className="flex items-center gap-1.5 truncate">
-                    <Check className="h-3.5 w-3.5 text-sky-400 shrink-0" />
-                    <span>Vinculado ao modelo: <strong>{currentActiveTemplate.title}</strong></span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      playIndustrialClick();
-                      applyTemplate(currentActiveTemplate);
-                    }}
-                    className="text-[10px] text-sky-400 hover:text-sky-200 underline font-semibold shrink-0 ml-2"
-                  >
-                    Repor textos padrão
-                  </button>
-                </div>
-              )}
-
-              {/* Subcategoria & Causa Típica fields */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-300 flex items-center justify-between">
-                    <span>Subcategoria</span>
-                    <span className="text-[9px] text-slate-500 font-normal">Padronizada</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={subcategory}
-                    onChange={(e) => setSubcategory(e.target.value)}
-                    placeholder="Ex: Transmissão Mecânica, Automação..."
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-2 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-300 flex items-center justify-between">
-                    <span>Causa Típica Identificada</span>
-                    <span className="text-[9px] text-slate-500 font-normal">Padronizada</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={typicalCause}
-                    onChange={(e) => setTypicalCause(e.target.value)}
-                    placeholder="Ex: Falta de lubrificação, Sobrecarga..."
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-2 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* Descrição da Paragem (Motivo / Causa) - Linked */}
-              <div id="field-stoppageDescription">
-                <div className="flex items-center justify-between mb-1">
-                  <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-200">
-                    <FileText className="h-3.5 w-3.5 text-amber-400" />
-                    <span>Descrição da paragem (Motivo / Causa) <span className="text-rose-400">*</span></span>
-                  </label>
-                  <span className="text-[10px] text-sky-400/90 font-mono">
-                    {currentActiveTemplate && selectedTemplateId !== 'custom' ? 'Preenchido do modelo (editável)' : 'Editável'}
-                  </span>
-                </div>
-                <textarea
-                  rows={2}
-                  value={stoppageDescription}
-                  onChange={(e) => setStoppageDescription(e.target.value)}
-                  placeholder="Ex: Alarme térmico no motor de tração, sensor encravado, falta de cartão..."
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/90 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none"
-                />
-                {errors.stoppageDescription && (
-                  <p className="mt-1 text-[11px] font-semibold text-rose-400 flex items-center gap-1">
-                    <AlertCircle className="h-3 w-3" />
-                    {errors.stoppageDescription}
-                  </p>
-                )}
-              </div>
-
-              {/* Descrição do que foi feito (Ação Corretiva) - Linked */}
-              <div id="field-actionsTaken">
-                <div className="flex items-center justify-between mb-1">
-                  <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-200">
-                    <Wrench className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>Descrição do que foi feito (Ação Corretiva) <span className="text-rose-400">*</span></span>
-                  </label>
-                  <span className="text-[10px] text-emerald-400/90 font-mono">
-                    {currentActiveTemplate && selectedTemplateId !== 'custom' ? 'Preenchido do modelo (editável)' : 'Editável'}
-                  </span>
-                </div>
-                <textarea
-                  rows={2}
-                  value={actionsTaken}
-                  onChange={(e) => setActionsTaken(e.target.value)}
-                  placeholder="Ex: Desbloqueio mecânico, limpeza de fotocélula, substituição de fusível..."
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/90 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
-                />
-                {errors.actionsTaken && (
-                  <p className="mt-1 text-[11px] font-semibold text-rose-400 flex items-center gap-1">
-                    <AlertCircle className="h-3 w-3" />
-                    {errors.actionsTaken}
-                  </p>
-                )}
-              </div>
-
-              {/* Semantic Tags/Keywords Badges */}
-              {keywords.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-slate-800/60">
-                  <Tag className="h-3 w-3 text-sky-400 shrink-0" />
-                  <span className="text-[10px] text-slate-400 mr-1">Palavras-chave semânticas:</span>
-                  {keywords.map((kw, i) => (
-                    <span
-                      key={i}
-                      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/80 text-sky-300 border border-sky-800/60"
-                    >
-                      #{kw}
-                    </span>
-                  ))}
-                </div>
-              )}
+          {/* Descrição da Paragem (Motivo / Causa) */}
+          <div id="field-stoppageDescription">
+            <div className="flex items-center justify-between mb-1">
+              <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-200">
+                <FileText className="h-3.5 w-3.5 text-amber-400" />
+                <span>Descrição da paragem (Motivo / Causa) <span className="text-rose-400">*</span></span>
+              </label>
+              <span className="text-[10px] text-slate-400 font-mono">Editável</span>
             </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="text-[11px] text-slate-400 py-1 flex items-center justify-between">
-                <span>Sem modelos pré-configurados para este tipo. Preenchimento manual ativo.</span>
-                {onOpenAdmin && (
-                  <button
-                    type="button"
-                    onClick={onOpenAdmin}
-                    className="text-amber-400 hover:underline font-bold text-[10px]"
-                  >
-                    Criar no Catálogo
-                  </button>
-                )}
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Subcategoria
-                  </label>
-                  <input
-                    type="text"
-                    value={subcategory}
-                    onChange={(e) => setSubcategory(e.target.value)}
-                    placeholder="Ex: Transmissão Mecânica, Automação..."
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-xs text-white focus:border-sky-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Causa Típica Identificada
-                  </label>
-                  <input
-                    type="text"
-                    value={typicalCause}
-                    onChange={(e) => setTypicalCause(e.target.value)}
-                    placeholder="Ex: Falta de lubrificação, Sobrecarga..."
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-2 text-xs text-white focus:border-sky-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-200 mb-1">
-                  <FileText className="h-3.5 w-3.5 text-amber-400" />
-                  <span>Descrição da paragem (Motivo / Causa) <span className="text-rose-400">*</span></span>
-                </label>
-                <textarea
-                  rows={2}
-                  value={stoppageDescription}
-                  onChange={(e) => setStoppageDescription(e.target.value)}
-                  placeholder="Ex: Alarme térmico no motor de tração, sensor encravado..."
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white focus:border-amber-500 focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-200 mb-1">
-                  <Wrench className="h-3.5 w-3.5 text-emerald-400" />
-                  <span>Descrição do que foi feito (Ação Corretiva) <span className="text-rose-400">*</span></span>
-                </label>
-                <textarea
-                  rows={2}
-                  value={actionsTaken}
-                  onChange={(e) => setActionsTaken(e.target.value)}
-                  placeholder="Ex: Desbloqueio mecânico, limpeza de fotocélula..."
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none"
-                />
-              </div>
+            <textarea
+              rows={2}
+              value={stoppageDescription}
+              onChange={(e) => setStoppageDescription(e.target.value)}
+              placeholder="Ex: Afinação Mola: Fechar Baixo, Corrigir Espiral..."
+              className="w-full rounded-lg border border-slate-700 bg-slate-800/90 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+            />
+            {errors.stoppageDescription && (
+              <p className="mt-1 text-[11px] font-semibold text-rose-400 flex items-center gap-1">
+                <AlertCircle className="h-3 w-3" />
+                {errors.stoppageDescription}
+              </p>
+            )}
+          </div>
+
+          {/* Descrição do que foi feito (Ação Corretiva) */}
+          <div id="field-actionsTaken">
+            <div className="flex items-center justify-between mb-1">
+              <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-200">
+                <Wrench className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Descrição do que foi feito (Ação Corretiva) <span className="text-rose-400">*</span></span>
+              </label>
+              <span className="text-[10px] text-emerald-400/90 font-mono">Editável</span>
             </div>
-          )}
+            <textarea
+              rows={2}
+              value={actionsTaken}
+              onChange={(e) => setActionsTaken(e.target.value)}
+              placeholder="Ex: Afinação efetuada: Fechar Baixo; Corrigir Espiral..."
+              className="w-full rounded-lg border border-slate-700 bg-slate-800/90 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+            />
+            {errors.actionsTaken && (
+              <p className="mt-1 text-[11px] font-semibold text-rose-400 flex items-center gap-1">
+                <AlertCircle className="h-3 w-3" />
+                {errors.actionsTaken}
+              </p>
+            )}
+          </div>
         </div>
 
-        {/* 5. Condições Operacionais da Máquina & Gravidade */}
+        {/* 5. Gravidade e Estado */}
         <div className="space-y-3">
-          {/* 5.1 A máquina parou? — resposta simples com um tique */}
-          <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-3.5 shadow-sm">
-            <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
-              <Power className="h-3.5 w-3.5 text-rose-400" />
-              <span>A máquina parou? <span className="text-rose-400">*</span></span>
-            </label>
-
-            <button
-              type="button"
-              role="checkbox"
-              aria-checked={machineStopped}
-              onClick={() => {
-                playIndustrialClick();
-                setMachineStopped((prev) => !prev);
-              }}
-              className={`mt-2 flex w-full items-center gap-3 rounded-xl border-2 px-3.5 py-3 text-left transition-all active:scale-[0.99] ${
-                machineStopped
-                  ? 'border-rose-500 bg-rose-500/15 text-rose-200'
-                  : 'border-slate-700 bg-slate-800/60 text-slate-300 hover:border-slate-500'
-              }`}
-            >
-              <span
-                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border-2 transition-all ${
-                  machineStopped
-                    ? 'border-rose-400 bg-rose-500 text-white'
-                    : 'border-slate-500 bg-slate-900 text-transparent'
-                }`}
-              >
-                <Check className="h-5 w-5" strokeWidth={3} />
-              </span>
-              <span className="flex flex-col">
-                <span className="text-sm font-bold">
-                  {machineStopped ? 'Sim, a máquina parou' : 'Não, a máquina não parou (a brandar)'}
-                </span>
-                <span className="text-[11px] text-slate-400">
-                  {machineStopped
-                    ? 'Toque para desmarcar se a máquina continuou a trabalhar'
-                    : 'Toque para marcar se a máquina chegou a parar'}
-                </span>
-              </span>
-            </button>
-          </div>
 
           {/* 5.2 Prioridade da Avaria */}
           <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-3.5 shadow-sm">

@@ -73,6 +73,32 @@ export interface StoppageTemplate {
 export type StoppagePriority = 'Baixa' | 'Média' | 'Alta' | 'Crítica';
 export type StoppageStatus = 'Resolvido' | 'Em Decorrer' | 'Pendente';
 
+export type SpringAdjustmentAction =
+  | 'Fechar Baixo'
+  | 'Abrir Baixo'
+  | 'Corrigir Espiral'
+  | 'Abrir Todo'
+  | 'Fechar Todo'
+  | 'Corrigir Escada'
+  | 'Mola'
+  | 'Outro'
+  | string;
+
+export type MechanicalComponent =
+  | 'Braços'
+  | 'Pica'
+  | 'Cabeça'
+  | 'Borboleta'
+  | 'Outro'
+  | string;
+
+export type MechanicalAdjustmentType = 'Curso' | 'Tempo' | 'Ajuste';
+
+export interface MechanicalAdjustmentItem {
+  component: MechanicalComponent;
+  adjustmentTypes: MechanicalAdjustmentType[];
+}
+
 export interface StoppageRecord {
   id: string;
   machineId: string;
@@ -100,6 +126,10 @@ export interface StoppageRecord {
   typicalCause?: string;
   correctiveActions?: string;
   keywords?: string[];
+  // Nova taxonomia e submenus de afinações/avarias
+  springAdjustments?: string[];
+  mechanicalAdjustments?: MechanicalAdjustmentItem[];
+  isTuningIntervention?: boolean;
   stages?: StoppageStage[]; // Decomposição cronológica da intervenção por etapas
   createdAt: number;
 }

@@ -21,15 +21,18 @@ export const INITIAL_OPERATORS: Operator[] = [];
 export const DEFAULT_OPERATORS: string[] = [];
 
 export const INITIAL_STOPPAGE_TYPES: StoppageTypeItem[] = [
-  { id: 'st-1', name: 'Avaria Mecânica', color: 'rose', description: 'Rolamentos, correias, engrenagens, quebras estruturais', active: true },
-  { id: 'st-2', name: 'Avaria Elétrica', color: 'amber', description: 'Motores, sensores, disjuntores, cablagem, PLCs', active: true },
-  { id: 'st-3', name: 'Problema Pneumático / Hidráulico', color: 'sky', description: 'Fugas de ar, cilindros, válvulas solenóide, pressão de óleo', active: true },
-  { id: 'st-4', name: 'Falta de Matéria-Prima', color: 'orange', description: 'Ausência de bobines, caixas, químicos ou insumos', active: true },
-  { id: 'st-5', name: 'Setup / Mudança de Formato', color: 'indigo', description: 'Ajuste de moldes, troca de ferramentas, afinação', active: true },
-  { id: 'st-6', name: 'Limpeza e Higienização', color: 'emerald', description: 'Lavagem de linha, aspiração, desinfeção', active: true },
-  { id: 'st-7', name: 'Manutenção Preventiva', color: 'blue', description: 'Revisão periódica programada, lubrificação', active: true },
-  { id: 'st-8', name: 'Qualidade / Afinação', color: 'purple', description: 'Desvio de tolerâncias, defeito de produto, amostras', active: true },
-  { id: 'st-9', name: 'Operacional / Outro', color: 'slate', description: 'Pausa operacional, falta de operador, outros motivos', active: true },
+  { id: 'st-mola', name: 'Afinação Mola', color: 'amber', description: 'Fechar Baixo, Abrir Baixo, Corrigir Espiral, Abrir/Fechar Todo, Escada, Mola', active: true },
+  { id: 'st-afin-mec', name: 'Afinação Mecânica', color: 'blue', description: 'Braços, Pica, Cabeça, Borboleta (Curso, Tempo, Ajuste)', active: true },
+  { id: 'st-1', name: 'Avaria Mecânica', color: 'rose', description: 'Paragem mecânica garantida da máquina, componentes danificados e quebras', active: true },
+  { id: 'st-outro', name: 'Outro', color: 'slate', description: 'Pausa operacional, intervenção específica ou outras observações', active: true },
+  // Tipos históricos preservados para retrocompatibilidade
+  { id: 'st-2', name: 'Avaria Elétrica', color: 'amber', description: 'Motores, sensores, disjuntores, cablagem, PLCs', active: false },
+  { id: 'st-3', name: 'Problema Pneumático / Hidráulico', color: 'sky', description: 'Fugas de ar, cilindros, válvulas solenóide, pressão de óleo', active: false },
+  { id: 'st-4', name: 'Falta de Matéria-Prima', color: 'orange', description: 'Ausência de bobines, caixas, químicos ou insumos', active: false },
+  { id: 'st-5', name: 'Setup / Mudança de Formato', color: 'indigo', description: 'Ajuste de moldes, troca de ferramentas, afinação', active: false },
+  { id: 'st-6', name: 'Limpeza e Higienização', color: 'emerald', description: 'Lavagem de linha, aspiração, desinfeção', active: false },
+  { id: 'st-7', name: 'Manutenção Preventiva', color: 'blue', description: 'Revisão periódica programada, lubrificação', active: false },
+  { id: 'st-8', name: 'Qualidade / Afinação', color: 'purple', description: 'Desvio de tolerâncias, defeito de produto, amostras', active: false },
 ];
 
 export const INITIAL_STOPPAGE_TEMPLATES: StoppageTemplate[] = [

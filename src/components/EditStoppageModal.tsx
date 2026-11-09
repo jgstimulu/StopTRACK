@@ -34,6 +34,7 @@ import {
   StoppagePriority,
   StoppageStatus,
   StoppageTemplate,
+  MechanicalAdjustmentItem,
 } from '../types/manutrack';
 import { MACHINES_DATA, INITIAL_STOPPAGE_TYPES } from '../data/initialData';
 import { StagesEditor } from './StagesEditor';
@@ -44,6 +45,10 @@ import {
   getLocalYMD,
 } from '../utils/formatters';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
+import {
+  StoppageTaxonomySelector,
+  buildTaxonomySummary,
+} from './StoppageTaxonomySelector';
 
 interface EditStoppageModalProps {
   isOpen: boolean;
@@ -77,7 +82,9 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
   const [priority, setPriority] = useState<StoppagePriority>('Média');
   const [status, setStatus] = useState<StoppageStatus>('Resolvido');
   const [machineStopped, setMachineStopped] = useState<boolean>(true);
-  const [stoppageType, setStoppageType] = useState<string>('Avaria Mecânica');
+  const [stoppageType, setStoppageType] = useState<string>('Afinação Mola');
+  const [springAdjustments, setSpringAdjustments] = useState<string[]>([]);
+  const [mechanicalAdjustments, setMechanicalAdjustments] = useState<MechanicalAdjustmentItem[]>([]);
   const [initiatedBy, setInitiatedBy] = useState<string>('');
   const [closedBy, setClosedBy] = useState<string>('');
   const [isCustomInitiator, setIsCustomInitiator] = useState<boolean>(false);
@@ -203,7 +210,11 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
     setPriority((record.priority as StoppagePriority) || 'Média');
     setStatus((record.status as StoppageStatus) || 'Resolvido');
     setMachineStopped(record.machineStopped !== false);
-    setStoppageType(record.stoppageType || 'Avaria Mecânica');
+    setStoppageType(record.stoppageType || 'Afinação Mola');
+    setSpringAdjustments(Array.isArray(record.springAdjustments) ? record.springAdjustments : []);
+    setMechanicalAdjustments(
+      Array.isArray(record.mechanicalAdjustments) ? record.mechanicalAdjustments : []
+    );
     setInitiatedBy(record.initiatedBy || '');
     setClosedBy(record.closedBy || '');
     setIsCustomInitiator(!availableOperators.some((op) => op.active && op.name === record.initiatedBy));
@@ -360,6 +371,8 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
       const cleanStartTime = startTime.length === 5 ? `${startTime}:00` : startTime;
       const cleanEndTime = endTime.length === 5 ? `${endTime}:00` : endTime;
 
+      const isTuning = stoppageType === 'Afinação Mola' || stoppageType === 'Afinação Mecânica';
+
       const updatedRecord: StoppageRecord = {
         ...record,
         machineId: selectedMachine.code,
@@ -374,7 +387,10 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
         shift: shift.trim(),
         priority,
         status,
-        machineStopped,
+        machineStopped: stoppageType === 'Avaria Mecânica' ? true : machineStopped,
+        isTuningIntervention: isTuning,
+        springAdjustments: stoppageType === 'Afinação Mola' ? springAdjustments : undefined,
+        mechanicalAdjustments: stoppageType === 'Afinação Mecânica' ? mechanicalAdjustments : undefined,
         initiatedBy: initiatedBy.trim(),
         closedBy: closedBy.trim(),
         stoppageType: stoppageType.trim(),
@@ -608,79 +624,40 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
             </div>
           </div>
 
-          {/* Section 2: Type, Priority, Status & Machine Stopped */}
+          {/* Section 2: Submenu e Taxonomia Padronizada (Afinação Mola, Afinação Mecânica, Avaria Mecânica, Outro) */}
+          <StoppageTaxonomySelector
+            stoppageType={stoppageType}
+            onTypeChange={(newType) => {
+              setStoppageType(newType);
+              const summary = buildTaxonomySummary(
+                newType,
+                newType === 'Afinação Mola' ? springAdjustments : [],
+                newType === 'Afinação Mecânica' ? mechanicalAdjustments : []
+              );
+              setStoppageDescription(summary.description);
+              setActionsTaken(summary.actions);
+            }}
+            availableStoppageTypes={availableStoppageTypes}
+            springAdjustments={springAdjustments}
+            onSpringAdjustmentsChange={setSpringAdjustments}
+            mechanicalAdjustments={mechanicalAdjustments}
+            onMechanicalAdjustmentsChange={setMechanicalAdjustments}
+            machineStopped={machineStopped}
+            onMachineStoppedChange={setMachineStopped}
+            onAutoGenerateSummary={(desc, acts) => {
+              setStoppageDescription(desc);
+              setActionsTaken(acts);
+            }}
+            stoppageDescription={stoppageDescription}
+            actionsTaken={actionsTaken}
+          />
+
+          {/* Section 2.1: Priority & Status Badges */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3.5 space-y-3">
             <h4 className="text-[11px] font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
               <Activity className="h-3.5 w-3.5 text-amber-400" />
-              <span>Classificação e Estado</span>
+              <span>Prioridade e Estado da Ocorrência</span>
             </h4>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {/* Stoppage Type */}
-              <div id="field-stoppageType">
-                <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  Tipo de Paragem <span className="text-rose-400">*</span>
-                </label>
-                <select
-                  value={stoppageType}
-                  onChange={(e) => {
-                    playIndustrialClick();
-                    handleTypeChange(e.target.value);
-                    if (errors.stoppageType) setErrors((prev) => ({ ...prev, stoppageType: '' }));
-                  }}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
-                >
-                  {typesList.map((typeName) => (
-                    <option key={typeName} value={typeName}>
-                      {typeName}
-                    </option>
-                  ))}
-                </select>
-
-                {errors.stoppageType && (
-                  <p className="text-[10px] text-rose-400 mt-1 font-semibold">{errors.stoppageType}</p>
-                )}
-              </div>
-
-              {/* Machine Stopped Toggle */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  A máquina parou?
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      playIndustrialClick();
-                      setMachineStopped(true);
-                    }}
-                    className={`flex items-center justify-center gap-1.5 py-2 rounded-xl border text-xs font-bold transition-all ${
-                      machineStopped
-                        ? 'border-rose-500 bg-rose-500/20 text-rose-300 ring-1 ring-rose-500/40'
-                        : 'border-slate-700 bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
-                  >
-                    <Power className="h-3.5 w-3.5 text-rose-400" />
-                    <span>Sim (Parou)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      playIndustrialClick();
-                      setMachineStopped(false);
-                    }}
-                    className={`flex items-center justify-center gap-1.5 py-2 rounded-xl border text-xs font-bold transition-all ${
-                      !machineStopped
-                        ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40'
-                        : 'border-slate-700 bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
-                  >
-                    <Check className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>Não (A brandar)</span>
-                  </button>
-                </div>
-              </div>
-            </div>
 
             {/* Priority & Status Badges */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
@@ -874,106 +851,15 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
             </div>
           </div>
 
-          {/* Section 4: Padronização Semântica & Modelos (Causa, Motivo e Ação Vinculados) */}
-          <div className="rounded-xl border border-sky-500/40 bg-sky-950/20 p-3.5 space-y-3">
-            <div className="flex items-center justify-between border-b border-sky-800/40 pb-2">
-              <h4 className="text-[11px] font-bold text-sky-200 uppercase tracking-wide flex items-center gap-1.5">
-                <Sparkles className="h-3.5 w-3.5 text-sky-400" />
-                <span>Modelos Padronizados & Causa Típica</span>
-              </h4>
-              <span className="text-[10px] text-sky-300 bg-sky-900/60 px-2 py-0.5 rounded font-mono border border-sky-700/50">
-                Vinculação Direta & Editável
+          {/* Section 4: Descrição da Paragem & Ação Corretiva (Vinculadas e Editáveis) */}
+          <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-4 shadow-sm space-y-3.5">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                Descrição e Ação Realizada
               </span>
-            </div>
-
-            {/* Template Selector Pills */}
-            {matchingTemplates.length > 0 && (
-              <div className="space-y-2.5">
-                <div className="flex flex-wrap gap-1.5">
-                  {matchingTemplates.map((tpl) => (
-                    <button
-                      key={tpl.id}
-                      type="button"
-                      onClick={() => {
-                        playIndustrialClick();
-                        applyTemplate(tpl);
-                      }}
-                      className={`px-2 py-1 text-[11px] rounded-lg font-medium transition-all text-left flex items-center gap-1.5 ${
-                        selectedTemplateId === tpl.id
-                          ? 'bg-sky-500 text-white shadow-sm ring-1 ring-sky-300 font-bold'
-                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700'
-                      }`}
-                    >
-                      <span>{tpl.title}</span>
-                      {selectedTemplateId === tpl.id && <Check className="h-3 w-3 shrink-0" />}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      playIndustrialClick();
-                      setSelectedTemplateId('custom');
-                    }}
-                    className={`px-2 py-1 text-[11px] rounded-lg font-medium transition-all text-left ${
-                      selectedTemplateId === 'custom'
-                        ? 'bg-slate-700 text-white ring-1 ring-slate-400 font-bold'
-                        : 'bg-slate-900/60 text-slate-400 hover:bg-slate-800 border border-dashed border-slate-700'
-                    }`}
-                  >
-                    Personalizado / Manual
-                  </button>
-                </div>
-
-                {/* Banner of active template link */}
-                {currentActiveTemplate && selectedTemplateId !== 'custom' && (
-                  <div className="flex items-center justify-between text-[11px] text-sky-200 bg-sky-900/30 border border-sky-700/50 rounded-lg px-2.5 py-1.5">
-                    <span className="flex items-center gap-1.5 truncate">
-                      <Check className="h-3.5 w-3.5 text-sky-400 shrink-0" />
-                      <span>Vinculado ao modelo: <strong>{currentActiveTemplate.title}</strong></span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        playIndustrialClick();
-                        applyTemplate(currentActiveTemplate);
-                      }}
-                      className="text-[10px] text-sky-400 hover:text-sky-200 underline font-semibold shrink-0 ml-2"
-                    >
-                      Repor textos padrão
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Subcategory & Typical Cause */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-300 flex items-center justify-between">
-                  <span>Subcategoria</span>
-                  <span className="text-[9px] text-slate-500 font-normal">Padronizada</span>
-                </label>
-                <input
-                  type="text"
-                  value={subcategory}
-                  onChange={(e) => setSubcategory(e.target.value)}
-                  placeholder="Ex: Transmissão Mecânica, Automação..."
-                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-300 flex items-center justify-between">
-                  <span>Causa Típica Identificada</span>
-                  <span className="text-[9px] text-slate-500 font-normal">Padronizada</span>
-                </label>
-                <input
-                  type="text"
-                  value={typicalCause}
-                  onChange={(e) => setTypicalCause(e.target.value)}
-                  placeholder="Ex: Falta de lubrificação, Sobrecarga..."
-                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
+              <span className="text-[10px] text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30 font-mono">
+                Sugestão Automática & 100% Editável
+              </span>
             </div>
 
             {/* Descrição da Paragem (Motivo / Causa) */}
@@ -983,15 +869,13 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                   <FileText className="h-3 w-3 text-amber-400" />
                   <span>Descrição da Paragem (Motivo / Causa) <span className="text-rose-400">*</span></span>
                 </label>
-                <span className="text-[10px] text-sky-400 font-mono">
-                  {currentActiveTemplate && selectedTemplateId !== 'custom' ? 'Preenchido do modelo (editável)' : 'Editável'}
-                </span>
+                <span className="text-[10px] text-slate-400 font-mono">Editável</span>
               </div>
               <textarea
                 value={stoppageDescription}
                 onChange={(e) => setStoppageDescription(e.target.value)}
                 rows={2}
-                placeholder="Ex.: Motor principal sobreaqueceu e desarmou o disjuntor Q1..."
+                placeholder="Ex: Afinação Mola: Fechar Baixo, Corrigir Espiral..."
                 className="w-full rounded-lg border border-slate-700 bg-slate-800/90 p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
               />
             </div>
@@ -1003,34 +887,16 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
                   <Wrench className="h-3 w-3 text-emerald-400" />
                   <span>Descrição do que foi feito (Ação Corretiva) <span className="text-rose-400">*</span></span>
                 </label>
-                <span className="text-[10px] text-emerald-400 font-mono">
-                  {currentActiveTemplate && selectedTemplateId !== 'custom' ? 'Preenchido do modelo (editável)' : 'Editável'}
-                </span>
+                <span className="text-[10px] text-emerald-400 font-mono">Editável</span>
               </div>
               <textarea
                 value={actionsTaken}
                 onChange={(e) => setActionsTaken(e.target.value)}
                 rows={2}
-                placeholder="Ex.: Substituição da correia dentada, reaperto de bornes e teste em vazio..."
+                placeholder="Ex: Afinação efetuada: Fechar Baixo; Corrigir Espiral..."
                 className="w-full rounded-lg border border-slate-700 bg-slate-800/90 p-2.5 text-xs text-emerald-200 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
               />
             </div>
-
-            {/* Keywords Badges */}
-            {keywords.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-slate-800/60">
-                <Tag className="h-3 w-3 text-sky-400 shrink-0" />
-                <span className="text-[10px] text-slate-400 mr-1">Palavras-chave semânticas:</span>
-                {keywords.map((kw, i) => (
-                  <span
-                    key={i}
-                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/80 text-sky-300 border border-sky-800/60"
-                  >
-                    #{kw}
-                  </span>
-                ))}
-              </div>
-            )}
           </div>
 
           {/* Section 4.1: Outras Observações (Opcional - Único campo opcional) */}

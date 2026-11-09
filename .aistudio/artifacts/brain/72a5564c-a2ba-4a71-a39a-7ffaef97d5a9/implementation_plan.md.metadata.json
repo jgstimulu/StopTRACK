@@ -1,6 +1,6 @@
 {
-  "summary":  "Plano de implementação detalhado para o catálogo de modelos de avaria e paragem (stoppage_templates) no Supabase, com suporte a sugestão de preenchimento automático editável, gestão de causas típicas, ações corretivas, subcategorias e palavras-chave semânticas.",
-  "updatedAt":  "2026-11-02T12:32:30.975432895Z",
+  "summary":  "Revisão do plano de implementação incorporando as regras operacionais: Afinação Mola e Afinação Mecânica contabilizam o tempo de afinação total (admitindo máquina em marcha ou com micro-paragens/arranques de ensaio), enquanto a Avaria Mecânica é garantidamente uma paragem total de máquina.",
+  "updatedAt":  "2026-11-09T11:59:11.496866980Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
