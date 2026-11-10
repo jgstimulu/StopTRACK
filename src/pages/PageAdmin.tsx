@@ -1071,7 +1071,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                 className={`rounded-md px-2 py-1 font-semibold transition-colors ${
                   opFilter === 'all'
                     ? 'bg-slate-700 text-white'
-                    : 'bg-slate-850 text-slate-400 hover:text-white'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
                 Todos
@@ -1082,7 +1082,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                 className={`rounded-md px-2 py-1 font-semibold transition-colors ${
                   opFilter === 'can_start'
                     ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'bg-slate-850 text-slate-400 hover:text-white'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
                 Podem Iniciar
@@ -1093,7 +1093,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                 className={`rounded-md px-2 py-1 font-semibold transition-colors ${
                   opFilter === 'can_close'
                     ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                    : 'bg-slate-850 text-slate-400 hover:text-white'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
                 Podem Fechar

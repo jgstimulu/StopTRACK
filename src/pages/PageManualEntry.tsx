@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ArrowLeft,
   Save,
@@ -93,6 +93,11 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
   const [actionsTaken, setActionsTaken] = useState<string>('');
   const [otherObservations, setOtherObservations] = useState<string>('');
 
+  // Track manual edits so automatic summaries do not overwrite them.
+  const descriptionTouchedRef = useRef(false);
+  const actionsTouchedRef = useRef(false);
+  const didInitTemplateRef = useRef(false);
+
   // Initial pre-population of description and actions
   useEffect(() => {
     if (!stoppageDescription && !actionsTaken) {
@@ -101,6 +106,18 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
       setActionsTaken(summary.actions);
     }
   }, []);
+
+  const applyAutoSummary = (description: string, actions: string) => {
+    if (!descriptionTouchedRef.current) setStoppageDescription(description);
+    if (!actionsTouchedRef.current) setActionsTaken(actions);
+  };
+
+  const applySummary = (description: string, actions: string) => {
+    descriptionTouchedRef.current = false;
+    actionsTouchedRef.current = false;
+    setStoppageDescription(description);
+    setActionsTaken(actions);
+  };
 
   // Padronização e Modelos
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
@@ -127,6 +144,8 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
   }, [matchingTemplates, selectedTemplateId]);
 
   const applyTemplate = (tpl: StoppageTemplate) => {
+    descriptionTouchedRef.current = false;
+    actionsTouchedRef.current = false;
     setSelectedTemplateId(tpl.id);
     setSubcategory(tpl.subcategory);
     setTypicalCause(tpl.typicalCause);
@@ -135,33 +154,22 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
     setKeywords(tpl.keywords || []);
   };
 
-  // Pré-preenchimento da sugestão ao abrir
+  // Pre-fill the first matching template only when the form opens (not on every type change).
   useEffect(() => {
-    if (matchingTemplates.length > 0 && !selectedTemplateId) {
+    if (didInitTemplateRef.current || matchingTemplates.length === 0) return;
+    didInitTemplateRef.current = true;
+    if (!selectedTemplateId && !descriptionTouchedRef.current && !actionsTouchedRef.current) {
       applyTemplate(matchingTemplates[0]);
     }
-  }, [matchingTemplates]);
+  }, [matchingTemplates, selectedTemplateId]);
 
   const handleTypeChange = (newType: string) => {
     setStoppageType(newType);
-    const currentTypeItem = availableStoppageTypes.find(
-      (st) => st.name.toLowerCase() === newType.toLowerCase()
-    );
-    const matches = availableTemplates.filter(
-      (t) =>
-        t.active &&
-        (t.stoppageTypeId === currentTypeItem?.id ||
-          t.stoppageTypeId === newType ||
-          t.stoppageTypeId.toLowerCase() === newType.toLowerCase())
-    );
-    if (matches.length > 0) {
-      applyTemplate(matches[0]);
-    } else {
-      setSelectedTemplateId('');
-      setSubcategory('');
-      setTypicalCause('');
-      setKeywords([]);
-    }
+    // Do not keep template metadata from the previous type.
+    setSelectedTemplateId('');
+    setSubcategory('');
+    setTypicalCause('');
+    setKeywords([]);
   };
 
 
@@ -242,6 +250,8 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
     setCloserPin('');
     setIsCustomInitiator(false);
     const initialSummary = buildTaxonomySummary('Afinação Mola', [], []);
+    descriptionTouchedRef.current = false;
+    actionsTouchedRef.current = false;
     setStoppageDescription(initialSummary.description);
     setActionsTaken(initialSummary.actions);
     setOtherObservations('');
@@ -822,16 +832,7 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
         {/* 3. Submenu e Taxonomia Padronizada (Afinação Mola, Afinação Mecânica, Avaria Mecânica, Outro) */}
         <StoppageTaxonomySelector
           stoppageType={stoppageType}
-          onTypeChange={(newType) => {
-            setStoppageType(newType);
-            const summary = buildTaxonomySummary(
-              newType,
-              newType === 'Afinação Mola' ? springAdjustments : [],
-              newType === 'Afinação Mecânica' ? mechanicalAdjustments : []
-            );
-            setStoppageDescription(summary.description);
-            setActionsTaken(summary.actions);
-          }}
+          onTypeChange={handleTypeChange}
           availableStoppageTypes={availableStoppageTypes}
           springAdjustments={springAdjustments}
           onSpringAdjustmentsChange={setSpringAdjustments}
@@ -839,12 +840,8 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
           onMechanicalAdjustmentsChange={setMechanicalAdjustments}
           machineStopped={machineStopped}
           onMachineStoppedChange={setMachineStopped}
-          onAutoGenerateSummary={(desc, acts) => {
-            setStoppageDescription(desc);
-            setActionsTaken(acts);
-          }}
-          stoppageDescription={stoppageDescription}
-          actionsTaken={actionsTaken}
+          onAutoGenerateSummary={applyAutoSummary}
+          onApplySummary={applySummary}
         />
 
         {/* 4. Descrição da Paragem & Ação Corretiva (Vinculadas e Editáveis) */}
@@ -870,7 +867,10 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
             <textarea
               rows={2}
               value={stoppageDescription}
-              onChange={(e) => setStoppageDescription(e.target.value)}
+              onChange={(e) => {
+                descriptionTouchedRef.current = true;
+                setStoppageDescription(e.target.value);
+              }}
               placeholder="Ex: Afinação Mola: Fechar Baixo, Corrigir Espiral..."
               className="w-full rounded-lg border border-slate-700 bg-slate-800/90 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none"
             />
@@ -894,7 +894,10 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
             <textarea
               rows={2}
               value={actionsTaken}
-              onChange={(e) => setActionsTaken(e.target.value)}
+              onChange={(e) => {
+                actionsTouchedRef.current = true;
+                setActionsTaken(e.target.value);
+              }}
               placeholder="Ex: Afinação efetuada: Fechar Baixo; Corrigir Espiral..."
               className="w-full rounded-lg border border-slate-700 bg-slate-800/90 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
             />

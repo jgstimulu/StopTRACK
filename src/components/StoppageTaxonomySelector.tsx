@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Wrench,
   Cog,
@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   Sliders,
   Layers,
+  Tag,
 } from 'lucide-react';
 import {
   MechanicalAdjustmentItem,
@@ -21,7 +22,16 @@ import {
 } from '../types/manutrack';
 import { playIndustrialClick } from '../utils/audio';
 
-export const CORE_STOPPAGE_TYPES = [
+export type StoppageTypeCard = {
+  id: string;
+  name: string;
+  color: string;
+  icon: React.ElementType;
+  badgeText: string;
+  description?: string;
+};
+
+export const CORE_STOPPAGE_TYPES: StoppageTypeCard[] = [
   {
     id: 'st-mola',
     name: 'Afinação Mola',
@@ -90,11 +100,10 @@ export interface StoppageTaxonomySelectorProps {
   // Machine stopped indicator
   machineStopped: boolean;
   onMachineStoppedChange: (stopped: boolean) => void;
-  // Text generation callback (description & actions)
+  // Automatic text generation (only used when the fields were not edited manually)
   onAutoGenerateSummary?: (description: string, actions: string) => void;
-  // Current text values to know if they were touched
-  stoppageDescription?: string;
-  actionsTaken?: string;
+  // Explicit "sync text" action (always overwrites the fields)
+  onApplySummary?: (description: string, actions: string) => void;
 }
 
 export function buildTaxonomySummary(
@@ -168,16 +177,46 @@ export const StoppageTaxonomySelector: React.FC<StoppageTaxonomySelectorProps> =
   machineStopped,
   onMachineStoppedChange,
   onAutoGenerateSummary,
-  stoppageDescription = '',
-  actionsTaken = '',
+  onApplySummary,
 }) => {
   const [customSpringNote, setCustomSpringNote] = useState<string>('');
+
+  // Active types configured in Admin. Falls back to the standard cards while settings load.
+  const displayTypes = useMemo<StoppageTypeCard[]>(() => {
+    if (availableStoppageTypes.length === 0) return CORE_STOPPAGE_TYPES;
+
+    return availableStoppageTypes
+      .filter((type) => type.active)
+      .map((type) => {
+        const core = CORE_STOPPAGE_TYPES.find(
+          (item) => item.id === type.id || item.name === type.name
+        );
+        if (core) {
+          return {
+            ...core,
+            name: type.name,
+            color: type.color || core.color,
+            description: type.description || core.description,
+          };
+        }
+        return {
+          id: type.id,
+          name: type.name,
+          color: type.color,
+          icon: Tag,
+          badgeText: 'Tipo Configurado',
+          description: type.description,
+        };
+      });
+  }, [availableStoppageTypes]);
 
   // Determine active primary type
   const isSpring = stoppageType === 'Afinação Mola';
   const isMechTuning = stoppageType === 'Afinação Mecânica';
   const isMechBreakdown = stoppageType === 'Avaria Mecânica';
-  const isOther = stoppageType === 'Outro';
+  const isOther =
+    stoppageType === 'Outro' ||
+    (stoppageType.trim().length > 0 && !isSpring && !isMechTuning && !isMechBreakdown);
   const isTuning = isSpring || isMechTuning;
 
   const handleSelectType = (typeName: string) => {
@@ -266,20 +305,21 @@ export const StoppageTaxonomySelector: React.FC<StoppageTaxonomySelectorProps> =
 
   const handleApplySummary = () => {
     playIndustrialClick();
-    if (onAutoGenerateSummary) {
+    const applySummary = onApplySummary ?? onAutoGenerateSummary;
+    if (applySummary) {
       const summary = buildTaxonomySummary(
         stoppageType,
         springAdjustments,
         mechanicalAdjustments,
         customSpringNote
       );
-      onAutoGenerateSummary(summary.description, summary.actions);
+      applySummary(summary.description, summary.actions);
     }
   };
 
   return (
     <div className="space-y-3">
-      {/* 1. SELEÇÃO PRINCIPAL DOS 4 TIPOS PADRÃO */}
+      {/* 1. SELEÇÃO PRINCIPAL DOS TIPOS CONFIGURADOS */}
       <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-3.5 shadow-sm">
         <div className="flex items-center justify-between mb-2.5">
           <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-200">
@@ -290,7 +330,7 @@ export const StoppageTaxonomySelector: React.FC<StoppageTaxonomySelectorProps> =
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {CORE_STOPPAGE_TYPES.map((typeItem) => {
+          {displayTypes.map((typeItem) => {
             const isSelected = stoppageType === typeItem.name;
             const IconComp = typeItem.icon;
 
@@ -334,14 +374,14 @@ export const StoppageTaxonomySelector: React.FC<StoppageTaxonomySelectorProps> =
         </div>
 
         {/* Fallback selector for historical legacy types */}
-        {stoppageType && !CORE_STOPPAGE_TYPES.some((t) => t.name === stoppageType) && (
+        {stoppageType && !displayTypes.some((t) => t.name === stoppageType) && (
           <div className="mt-2 text-xs bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 flex items-center justify-between">
             <span className="text-slate-300">
               Tipo histórico selecionado: <strong className="text-amber-300">{stoppageType}</strong>
             </span>
             <button
               type="button"
-              onClick={() => handleSelectType('Afinação Mola')}
+              onClick={() => handleSelectType(displayTypes[0]?.name || 'Afinação Mola')}
               className="text-[10px] text-amber-400 hover:underline"
             >
               Mudar para novo padrão
@@ -475,7 +515,7 @@ export const StoppageTaxonomySelector: React.FC<StoppageTaxonomySelectorProps> =
                     className={`rounded-xl border transition-all p-2.5 ${
                       isCompSelected
                         ? 'border-sky-500/60 bg-sky-900/30'
-                        : 'border-slate-800 bg-slate-850/60 hover:border-slate-700'
+                        : 'border-slate-800 bg-slate-800/60 hover:border-slate-700'
                     }`}
                   >
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
