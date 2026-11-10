@@ -11,10 +11,10 @@ import {
   CheckCircle,
   Flame,
   Activity,
-  Layers,
   Gauge,
   Calendar,
   Filter,
+  Sliders,
 } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
 import { StoppageRecord } from '../types/manutrack';
@@ -22,6 +22,7 @@ import { STOPPAGE_TYPES } from '../data/initialData';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
 import { exportOeeKpiCSV } from '../utils/csvExport';
 import { getShiftFromTimeString } from '../utils/shift';
+import { getReportingTotals, isRecordMachineStopped } from '../utils/taxonomy';
 
 interface PageDashboardProps {
   records: StoppageRecord[];
@@ -59,13 +60,23 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
     });
   }, [records, timeFilter]);
 
-  const totalCount = filteredRecords.length;
-  const totalDurationMs = filteredRecords.reduce((acc, r) => acc + (r.durationMs || 0), 0);
-  const totalMinutes = Math.round(totalDurationMs / 60000);
-  const totalHours = (totalMinutes / 60).toFixed(1);
+  const {
+    totalCount,
+    downtimeCount,
+    tuningCount,
+    downtimeDurationMs,
+    downtimeMinutes: totalMinutes,
+    tuningMinutes,
+    mttrMinutes,
+  } = useMemo(() => getReportingTotals(filteredRecords), [filteredRecords]);
 
-  // MTTR (Mean Time to Repair in minutes)
-  const mttrMinutes = totalCount > 0 ? Math.round(totalMinutes / totalCount) : 0;
+  const downtimeRecords = useMemo(
+    () => filteredRecords.filter(isRecordMachineStopped),
+    [filteredRecords]
+  );
+
+  const totalHours = (totalMinutes / 60).toFixed(1);
+  const tuningHours = (tuningMinutes / 60).toFixed(1);
 
   // Industrial OEE Availability Calculation
   // Standard plant parameters: 30 machines, shift duration = 8h (480 min) per shift, 2 shifts = 16h/day
@@ -85,7 +96,7 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
   const availabilityPercent = Math.min(100, Math.max(0, parseFloat(rawAvailability.toFixed(1))));
 
   // MTBF (Mean Time Between Failures in Operating Hours)
-  const mtbfHours = totalCount > 0 ? ((operatingMinutes / 60) / totalCount).toFixed(1) : (plannedHoursScope / 30).toFixed(1);
+  const mtbfHours = downtimeCount > 0 ? ((operatingMinutes / 60) / downtimeCount).toFixed(1) : (plannedHoursScope / 30).toFixed(1);
 
   // Availability Benchmark Classification
   const getAvailabilityRating = (pct: number) => {
@@ -96,9 +107,9 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
   };
   const rating = getAvailabilityRating(availabilityPercent);
 
-  // Group by machine
+  // Group by machine (only actual machine stoppages)
   const machineCountMap = new Map<string, { count: number; durationMs: number; machineName: string }>();
-  filteredRecords.forEach((r) => {
+  downtimeRecords.forEach((r) => {
     const cur = machineCountMap.get(r.machineId) || { count: 0, durationMs: 0, machineName: r.machineName || r.machineId };
     machineCountMap.set(r.machineId, {
       count: cur.count + 1,
@@ -111,9 +122,9 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
     .sort((a, b) => b[1].durationMs - a[1].durationMs)
     .slice(0, 5);
 
-  // Group by stoppage type dynamically
+  // Group by stoppage type dynamically (only actual machine stoppages)
   const typeDurationMap = new Map<string, { count: number; durationMs: number }>();
-  filteredRecords.forEach((r) => {
+  downtimeRecords.forEach((r) => {
     const type = r.stoppageType || 'Não Especificado';
     const cur = typeDurationMap.get(type) || { count: 0, durationMs: 0 };
     typeDurationMap.set(type, {
@@ -132,7 +143,7 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
     'Turno Noturno': { count: 0, durationMs: 0, label: 'Turno Noturno', hours: '00:00 - 05:00', color: 'purple' },
   };
 
-  filteredRecords.forEach((r) => {
+  downtimeRecords.forEach((r) => {
     const sName = r.shift || (r.startTime ? getShiftFromTimeString(r.startTime).name : '1º Turno');
     if (sName.includes('1')) {
       shiftStats['1º Turno'].count++;
@@ -380,39 +391,45 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
 
               <div className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
                 <div className="flex min-w-0 items-center gap-1.5 text-slate-400 text-xs">
-                  <Layers className="h-3.5 w-3.5 text-sky-400" />
-                  <span className="min-w-0 font-bold uppercase text-[10px]">Total Intervenções</span>
+                  <Sliders className="h-3.5 w-3.5 text-sky-400" />
+                  <span className="min-w-0 font-bold uppercase text-[10px]">Tempo de Afinação</span>
                 </div>
-                <div className="mt-1 flex items-baseline gap-1">
-                  <span className="text-2xl font-black font-mono text-white">
-                    {totalCount}
+                <div className="mt-1 flex flex-wrap items-baseline gap-x-1">
+                  <span className="text-2xl font-black font-mono text-sky-300">
+                    {tuningHours}
                   </span>
-                  <span className="text-xs text-slate-400 font-mono">registos</span>
+                  <span className="text-xs text-slate-400 font-mono break-words">h ({tuningMinutes}m)</span>
                 </div>
                 <p className="text-[10px] text-slate-400 mt-0.5">
-                  Ocorrências no período
+                  Tempo total de afinação ({tuningCount} registos)
                 </p>
               </div>
             </div>
           </div>
+
+          <p className="mt-3 border-t border-slate-800 pt-2 text-[10px] leading-relaxed text-slate-500">
+            OEE, MTTR e MTBF consideram apenas registos com máquina parada. O tempo total de afinação é apresentado separadamente.
+          </p>
         </div>
 
         {/* 4 Responsive KPI Summary Cards */}
         <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-2.5">
           <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-3 text-center">
             <span className="text-[10px] font-bold uppercase text-slate-400 block truncate">
-              Total Paragens
+              Total Intervenções
             </span>
             <p className="mt-1 text-2xl font-black text-white font-mono">{totalCount}</p>
-            <span className="text-[10px] text-slate-400">ocorrências</span>
+            <span className="text-[10px] text-slate-400">
+              {downtimeCount} paragens · {tuningCount} afinações
+            </span>
           </div>
 
           <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-3 text-center">
             <span className="text-[10px] font-bold uppercase text-slate-400 block truncate">
-              Tempo Perdido
+              Tempo em Paragem
             </span>
             <p className="mt-1 text-2xl font-black text-rose-400 font-mono">{totalMinutes}m</p>
-            <span className="text-[10px] text-slate-400">{totalHours} horas</span>
+            <span className="text-[10px] text-slate-400">{totalHours} horas reais</span>
           </div>
 
           <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-3 text-center">
@@ -497,14 +514,14 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
           <div className="flex items-center gap-2 mb-3">
             <Clock className="h-4 w-4 text-amber-400 shrink-0" />
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-              Distribuição por Turno de Trabalho
+              Distribuição do Tempo em Paragem por Turno
             </h3>
           </div>
 
           <div className="space-y-3">
             {Object.entries(shiftStats).map(([key, item]) => {
               const mins = Math.round(item.durationMs / 60000);
-              const percent = totalDurationMs > 0 ? Math.round((item.durationMs / totalDurationMs) * 100) : 0;
+              const percent = downtimeDurationMs > 0 ? Math.round((item.durationMs / downtimeDurationMs) * 100) : 0;
               return (
                 <div key={key} className="space-y-1.5">
                   <div className="flex items-center justify-between text-xs gap-2">
@@ -626,7 +643,7 @@ export const PageDashboard: React.FC<PageDashboardProps> = ({ records, onBackToH
             <div className="flex items-center gap-2 mb-3">
               <Activity className="h-4 w-4 text-emerald-400 shrink-0" />
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-                Estado das Avarias
+                Estado das Intervenções
               </h3>
             </div>
             <div className="grid grid-cols-3 gap-2 text-xs">
