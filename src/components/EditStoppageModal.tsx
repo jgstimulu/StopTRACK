@@ -45,10 +45,7 @@ import {
   getLocalYMD,
 } from '../utils/formatters';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
-import {
-  StoppageTaxonomySelector,
-  buildTaxonomySummary,
-} from './StoppageTaxonomySelector';
+import { StoppageTaxonomySelector } from './StoppageTaxonomySelector';
 
 interface EditStoppageModalProps {
   isOpen: boolean;
@@ -105,6 +102,8 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const formRef = useRef<HTMLDivElement>(null);
   const loadedRecordIdRef = useRef<string | null>(null);
+  const descriptionTouchedRef = useRef(false);
+  const actionsTouchedRef = useRef(false);
 
   const activeOps = useMemo(
     () => availableOperators.filter((o) => o.active),
@@ -154,7 +153,21 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
     return matchingTemplates.find((t) => t.id === selectedTemplateId) || null;
   }, [matchingTemplates, selectedTemplateId]);
 
+  const applyAutoSummary = (description: string, actions: string) => {
+    if (!descriptionTouchedRef.current) setStoppageDescription(description);
+    if (!actionsTouchedRef.current) setActionsTaken(actions);
+  };
+
+  const applySummary = (description: string, actions: string) => {
+    descriptionTouchedRef.current = false;
+    actionsTouchedRef.current = false;
+    setStoppageDescription(description);
+    setActionsTaken(actions);
+  };
+
   const applyTemplate = (tpl: StoppageTemplate) => {
+    descriptionTouchedRef.current = false;
+    actionsTouchedRef.current = false;
     setSelectedTemplateId(tpl.id);
     setSubcategory(tpl.subcategory);
     setTypicalCause(tpl.typicalCause);
@@ -165,21 +178,11 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
 
   const handleTypeChange = (newType: string) => {
     setStoppageType(newType);
-    const currentTypeItem = availableStoppageTypes.find(
-      (st) => st.name.toLowerCase() === newType.toLowerCase()
-    );
-    const matches = availableTemplates.filter(
-      (t) =>
-        t.active &&
-        (t.stoppageTypeId === currentTypeItem?.id ||
-          t.stoppageTypeId === newType ||
-          t.stoppageTypeId.toLowerCase() === newType.toLowerCase())
-    );
-    if (matches.length > 0) {
-      applyTemplate(matches[0]);
-    } else {
-      setSelectedTemplateId('');
-    }
+    // Do not keep template metadata from the previous type.
+    setSelectedTemplateId('');
+    setSubcategory('');
+    setTypicalCause('');
+    setKeywords([]);
   };
 
   // Populate form fields ONLY when opening or when a new record is loaded (never while actively editing)
@@ -221,6 +224,9 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
     setIsCustomCloser(!availableOperators.some((op) => op.active && op.name === record.closedBy));
     setStoppageDescription(record.stoppageDescription || '');
     setActionsTaken(record.actionsTaken || '');
+    // Existing text belongs to the record; the taxonomy must not overwrite it automatically.
+    descriptionTouchedRef.current = Boolean((record.stoppageDescription || '').trim());
+    actionsTouchedRef.current = Boolean((record.actionsTaken || '').trim());
     setOtherObservations(record.otherObservations || '');
 
     // Initialize semantic fields from record
@@ -627,16 +633,7 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
           {/* Section 2: Submenu e Taxonomia Padronizada (Afinação Mola, Afinação Mecânica, Avaria Mecânica, Outro) */}
           <StoppageTaxonomySelector
             stoppageType={stoppageType}
-            onTypeChange={(newType) => {
-              setStoppageType(newType);
-              const summary = buildTaxonomySummary(
-                newType,
-                newType === 'Afinação Mola' ? springAdjustments : [],
-                newType === 'Afinação Mecânica' ? mechanicalAdjustments : []
-              );
-              setStoppageDescription(summary.description);
-              setActionsTaken(summary.actions);
-            }}
+            onTypeChange={handleTypeChange}
             availableStoppageTypes={availableStoppageTypes}
             springAdjustments={springAdjustments}
             onSpringAdjustmentsChange={setSpringAdjustments}
@@ -644,12 +641,8 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
             onMechanicalAdjustmentsChange={setMechanicalAdjustments}
             machineStopped={machineStopped}
             onMachineStoppedChange={setMachineStopped}
-            onAutoGenerateSummary={(desc, acts) => {
-              setStoppageDescription(desc);
-              setActionsTaken(acts);
-            }}
-            stoppageDescription={stoppageDescription}
-            actionsTaken={actionsTaken}
+            onAutoGenerateSummary={applyAutoSummary}
+            onApplySummary={applySummary}
           />
 
           {/* Section 2.1: Priority & Status Badges */}
@@ -873,7 +866,10 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
               </div>
               <textarea
                 value={stoppageDescription}
-                onChange={(e) => setStoppageDescription(e.target.value)}
+                onChange={(e) => {
+                  descriptionTouchedRef.current = true;
+                  setStoppageDescription(e.target.value);
+                }}
                 rows={2}
                 placeholder="Ex: Afinação Mola: Fechar Baixo, Corrigir Espiral..."
                 className="w-full rounded-lg border border-slate-700 bg-slate-800/90 p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
@@ -891,7 +887,10 @@ export const EditStoppageModal: React.FC<EditStoppageModalProps> = ({
               </div>
               <textarea
                 value={actionsTaken}
-                onChange={(e) => setActionsTaken(e.target.value)}
+                onChange={(e) => {
+                  actionsTouchedRef.current = true;
+                  setActionsTaken(e.target.value);
+                }}
                 rows={2}
                 placeholder="Ex: Afinação efetuada: Fechar Baixo; Corrigir Espiral..."
                 className="w-full rounded-lg border border-slate-700 bg-slate-800/90 p-2.5 text-xs text-emerald-200 placeholder-slate-500 focus:border-amber-400 focus:outline-none"
