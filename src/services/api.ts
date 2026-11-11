@@ -225,7 +225,11 @@ export async function apiCancelActiveDowntime(machineId: string): Promise<void> 
   if (!res.ok) throw await responseError(res, 'Falha ao cancelar paragem ativa.');
 }
 
-export async function apiSaveStoppage(record: StoppageRecord, requireOperatorAuth = false): Promise<StoppageRecord> {
+export async function apiSaveStoppage(
+  record: StoppageRecord,
+  requireOperatorAuth = false,
+  pin?: string
+): Promise<StoppageRecord> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const operatorToken = getOperatorToken();
   const adminToken = getAdminToken();
@@ -233,6 +237,9 @@ export async function apiSaveStoppage(record: StoppageRecord, requireOperatorAut
     headers.Authorization = 'Bearer ' + operatorToken;
   } else if (adminToken) {
     headers.Authorization = 'Bearer ' + adminToken;
+  }
+  if (pin && pin.trim()) {
+    headers['x-operator-pin'] = pin.trim();
   }
 
   const res = await fetch('/api/stoppages', {

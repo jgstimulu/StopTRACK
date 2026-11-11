@@ -1,6 +1,6 @@
 {
-  "summary":  "Revisão do plano de implementação incorporando as regras operacionais: Afinação Mola e Afinação Mecânica contabilizam o tempo de afinação total (admitindo máquina em marcha ou com micro-paragens/arranques de ensaio), enquanto a Avaria Mecânica é garantidamente uma paragem total de máquina.",
-  "updatedAt":  "2026-11-09T11:59:11.496866980Z",
+  "summary":  "Plano revisto para estender a taxonomia padronizada (Afinação Mola, Afinação Mecânica com Curso/Tempo/Ajuste, Avaria Mecânica e Outro) e a correção de erros de gravação também ao Registo Manual de Ocorrências (PageManualEntry), além do Fecho de Paragens (PageCloseStoppage) e Edição (EditStoppageModal).",
+  "updatedAt":  "2026-11-11T09:11:32.834104256Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

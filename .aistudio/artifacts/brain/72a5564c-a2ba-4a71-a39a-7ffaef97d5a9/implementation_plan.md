@@ -1,194 +1,112 @@
-# Padronização de Tipologia de Paragens e Submenus de Ações Recorrentes (Revisão 2)
+# Padronização de Ocorrências: Fecho Ativo e Registo Manual Retroativo (Revisão 3)
 
-Reestruturação dos tipos de paragem e introdução de submenus hierárquicos de seleção múltipla de ações e ajustes recorrentes, com geração automática de resumos editáveis e distinção clara entre **tempo total de afinação** (com ou sem paragem total) e **avaria mecânica** (paragem garantida).
+Revisão integral para aplicar e validar a taxonomia de paragens padronizada, os respetivos submenus específicos (Afinação Mola, Afinação Mecânica com Curso/Tempo/Ajuste, Avaria Mecânica com Parada e Observações, e Outro) e a resolução do erro de gravação/falso aviso de validação tanto no **Fecho de Paragem Ativa (`PageCloseStoppage`)** como no **Registo Manual de Ocorrências (`PageManualEntry`)** e **Edição (`EditStoppageModal`)**.
 
 ---
 
-## Decisões Confirmadas & Regras Operacionais
+## Decisões Confirmadas & Âmbito Alargado
 
 > [!IMPORTANT]
-> **Regras Operacionais Fundamentais Estabelecidas:**
-> 1. **Afinação Mola & Afinação Mecânica (Tempo Total de Afinação)**:
->    - Nas afinações, a máquina **pode não parar totalmente** ou ter **vários pequenos arranques e paragens** durante os ensaios de afinação.
->    - O sistema contabiliza o **tempo de afinação total** da intervenção (desde a abertura até à conclusão).
->    - A indicação de paragem é flexível / adaptada (com indicação informativa de marcha de ensaio / pequenas paragens transitórias, sem forçar paragem total).
-> 2. **Avaria Mecânica (Paragem Garantida)**:
->    - A avaria mecânica é **garantidamente uma paragem** de produção (`machineStopped = true` automático).
->    - Foco total nas observações da causa técnica e resolução mecânica.
-> 3. **Novos Tipos Oficiais**:
->    - `Afinação Mola`
->    - `Afinação Mecânica`
->    - `Avaria Mecânica`
->    - `Outro`
-> 4. **Geração Automática de Texto Editável**: Ao selecionar ações recorrentes nos submenus, o sistema sintetiza automaticamente o texto técnico nos campos de **Descrição da Paragem** e **Ação Realizada**, mantendo ambos 100% editáveis pelo supervisor.
-> 5. **Preservação de Histórico**: Registos anteriores mantêm as suas designações intactas no histórico.
+> **Extensão ao Registo Manual de Ocorrências:**
+> 1. O **Registo Manual Retroativo (`PageManualEntry.tsx`)** passa a ter exatamente as mesmas regras e submenus que o fecho da máquina ativa.
+> 2. **Eliminação do falso erro de "campos não preenchidos"**: Em ambos os formulários (`PageCloseStoppage` e `PageManualEntry`), erros devolvidos pela rede ou base de dados deixam de ser atribuídos a campos do formulário. São exibidos num banner de erro do servidor dedicado e claro.
+> 3. **4 Tipos Principais de Topo Fixados**:
+>    - 🟠 **Afinação Mola**: Submenu de 8 ações (`Fechar Baixo`, `Abrir Baixo`, `Corrigir Espiral`, `Abrir Todo`, `Fechar Todo`, `Corrigir Escada`, `Mola`, `Outro`).
+>    - 🔵 **Afinação Mecânica**: Componentes (`Braços`, `Pica`, `Cabeça`, `Borboleta`, `Outro`) com sub-opções (`Curso`, `Tempo`, `Ajuste`).
+>    - 🔴 **Avaria Mecânica**: Paragem garantida (`machineStopped = true`) com opção `Parada` e bloco de observações técnicas vinculado.
+>    - ⚪ **Outro**: Intervenção operacional ou motivo livre.
+> 4. **Cálculo de Tempo de Afinação**: Informação de "Tempo Total de Afinação" visível em Afinação Mola e Afinação Mecânica (máquina em ensaio ou pequenas paragens parciais).
+> 5. **Autorização & PIN no Registo Manual**: No registo manual, o PIN do operador que valida o fecho é verificado via login temporário e aceite pelo servidor sem rejeições 401 erróneas.
 
 ---
 
-## 1. Visão Geral da Interface & Submenus Dinâmicos
-
-### 1.1 Quatro Tipos Principais no Topo
-- 🟠 **Afinação Mola** (Ajuste de conformação de mola)
-- 🔵 **Afinação Mecânica** (Ajuste dimensional e temporal de órgãos)
-- 🔴 **Avaria Mecânica** (Quebra ou falha mecânica - máquina parada garantidamente)
-- ⚪ **Outro** (Intervenções diversas ou operacionais)
-
----
-
-### 1.2 Painel de Submenus por Tipo
-
-#### A. Afinação Mola (Cálculo do Tempo Total de Afinação)
-- **Nota Operacional Visível**: *"Tempo de afinação contínuo (máquina pode realizar múltiplos testes e arranques durante o ajuste)."*
-- **Ações Recorrentes (Multi-seleção por botões táteis)**:
-  - `Fechar Baixo`
-  - `Abrir Baixo`
-  - `Corrigir Espiral`
-  - `Abrir Todo`
-  - `Fechar Todo`
-  - `Corrigir Escada`
-  - `Mola`
-  - `Outro` (com campo rápido se necessário)
-- **Geração Automática**:
-  - *Descrição/Motivo*: `Afinação Mola: [Ações selecionadas]`
-  - *Ação Corretiva*: `Afinação de mola executada: [Ações selecionadas]`
-
-#### B. Afinação Mecânica (Componentes + Género de Ajuste)
-- **Nota Operacional Visível**: *"Tempo de afinação mecânica total (intervenção em marcha ou ensaios parciais)."*
-- **Componentes Mecânicos (Multi-seleção)**:
-  - `Braços`
-  - `Pica`
-  - `Cabeça`
-  - `Borboleta`
-  - `Outro`
-- **Submenu de Género de Ajuste** (para cada componente selecionado ou global da intervenção):
-  - `Curso` (afinação de amplitude/deslocamento)
-  - `Tempo` (afinação de sincronismo/temporização)
-  - `Ajuste` (calibração/folga/afinação geral)
-- **Geração Automática**:
-  - *Descrição/Motivo*: `Afinação Mecânica: Braços (Curso, Ajuste), Cabeça (Tempo)`
-  - *Ação Corretiva*: `Intervenção mecânica efetuada em Braços [Curso, Ajuste] e Cabeça [Tempo]`
-
-#### C. Avaria Mecânica (Paragem Garantida da Linha)
-- **Nota Operacional Visível**: *"Paragem garantida da máquina por falha mecânica."*
-- **Estado de Paragem**: `Parada = Sim` (bloqueado/garantido).
-- **Submenu de Causa & Observações**:
-  - Campo focado em **Observações da Avaria Mecânica**: descrição da falha, componentes danificados e ações imediatas.
-
-#### D. Outro
-- Campo livre para anotação de motivos operacionais ou específicos.
-
----
-
-## 2. Diagrama de Fluxo & Lógica de Negócio
+## 1. Arquitetura da Solução & Fluxo Unificado
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                      TIPO DE PARAGEM SELECIONADO                       │
+│             REGISTO MANUAL & FECHO DE OCORRÊNCIA NA MÁQUINA            │
+│                 (PageManualEntry & PageCloseStoppage)                  │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
-         ┌──────────────────────────┼─────────────────────────┐
-         ▼                          ▼                         ▼
-┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
-│  Afinação Mola   │      │Afinação Mecânica │      │ Avaria Mecânica  │
-│(Tempo Total Afin)│      │(Tempo Total Afin)│      │(Paragem Garant.) │
-└────────┬─────────┘      └────────┬─────────┘      └────────┬─────────┘
-         │                         │                         │
-         │ Máquina em ensaios      │ Máquina em ensaios      │ Máquina PARADA
-         │ (micro-arranques/par.)  │ (micro-arranques/par.)  │ (machineStopped=true)
-         ▼                         ▼                         ▼
-┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
-│ Submenu Ações:   │      │ Componentes:     │      │ Submenu Falha:   │
-│• Fechar Baixo    │      │• Braços  • Pica  │      │• Paragem total   │
-│• Abrir Baixo     │      │• Cabeça  • Borb. │      │• Observações     │
-│• Corrigir Espiral│      │• Outro           │      │  técnicas da     │
-│• Abrir Todo      │      └────────┬─────────┘      │  avaria mecânica │
-│• Fechar Todo     │               ▼                └────────┬─────────┘
-│• Corrigir Escada │      ┌──────────────────┐               │
-│• Mola   • Outro  │      │ Sub-ajustes:     │               │
-└────────┬─────────┘      │• Curso           │               │
-         │                │• Tempo           │               │
-         │                │• Ajuste          │               │
-         │                └────────┬─────────┘               │
-         └─────────────────────────┼─────────────────────────┘
-                                   │
-                                   ▼
+    ┌───────────────────────────────┴───────────────────────────────┐
+    ▼                                                               ▼
+┌──────────────────────────────────────┐        ┌──────────────────────────────────────┐
+│  SELETOR DE TIPOLOGIA PADRONIZADA    │        │  DADOS OPERACIONAIS & AUTORIZAÇÃO    │
+│  • Afinação Mola (8 ações de mola)   │        │  • Máquina, Data, Horas (Início/Fim) │
+│  • Afinação Mecânica (Órgãos +       │        │  • Turno (1º, 2º ou Noturno)         │
+│    Curso / Tempo / Ajuste)           │        │  • Operador de Início / Fecho        │
+│  • Avaria Mecânica (Paragem          │        │  • PIN de validação do operador      │
+│    Garantida + Observações)          │        │    (no registo manual retroativo)    │
+│  • Outro                             │        └──────────────────┬───────────────────┘
+└──────────────────┬───────────────────┘                           │
+                   │                                               │
+                   ▼                                               ▼
+┌──────────────────────────────────────┐        ┌──────────────────────────────────────┐
+│ SÍNTESE AUTOMÁTICA (100% EDITÁVEL)   │        │ VALIDAÇÃO ESTRITA NO CLIENTE         │
+│ • Descrição da Paragem               │        │ • Apenas campos reais não            │
+│ • Ação Realizada                     │        │   preenchidos ativam o alerta        │
+│ • Observações complementares         │        │   "Campos em falta"                  │
+└──────────────────┬───────────────────┘        └──────────────────┬───────────────────┘
+                   │                                               │
+                   └───────────────────────┬───────────────────────┘
+                                           │
+                                           ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│             GERAÇÃO AUTOMÁTICA DE RESUMO (EDITÁVEL)                    │
-│ • Descrição da Paragem (Motivo / Causa)                                │
-│ • Ação Realizada / Resolução                                           │
-│ • Resumo detalhado disponível para consulta e relatórios               │
+│                        ENVIO PARA O SERVIDOR                           │
+│ • Endpoint: POST /api/stoppages                                        │
+│ • Fecho de ativa: Validação direta da máquina e operador               │
+│ • Registo manual: Autorização via PIN de operador (canClose) ou Admin  │
+│ • Resposta de erro: Tratada num banner isolado "Erro do Servidor",     │
+│   sem contaminar os campos de texto preenchidos.                       │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Estrutura de Dados e Compatibilidade
+## 2. Implementação Detalhada por Módulo
 
-### 3.1 Extensão no `StoppageRecord`
-```typescript
-export interface MechanicalAdjustmentItem {
-  component: string;
-  adjustmentTypes: ('Curso' | 'Tempo' | 'Ajuste')[];
-}
+### 2.1 Componente `StoppageTaxonomySelector.tsx`
+- **Priorização dos 4 tipos padrão**: Garante que os botões `Afinação Mola`, `Afinação Mecânica`, `Avaria Mecânica` e `Outro` são sempre renderizados, independentemente de tipos legados existentes na tabela `stoppage_types` do Supabase.
+- **Submenu Afinação Mola**:
+  - 8 Ações táteis com multi-seleção e contadores.
+  - Alerta de contagem de tempo total de afinação.
+- **Submenu Afinação Mecânica**:
+  - Multi-seleção de órgãos (`Braços`, `Pica`, `Cabeça`, `Borboleta`, `Outro`).
+  - Cada órgão selecionado abre as tags de género de afinação (`Curso`, `Tempo`, `Ajuste`).
+- **Submenu Avaria Mecânica**:
+  - Indicação imediata de paragem física da máquina (`machineStopped = true`).
+  - Bloco de observações da anomalia mecânica.
+- **Geração de Texto em Tempo Real**: Atualiza a descrição e ação realizada, respeitando se o utilizador já escreveu manualmente.
 
-export interface StoppageRecord {
-  // Campos existentes
-  id: string;
-  machineId: string;
-  machineName: string;
-  date: string;
-  startTime: string;
-  endTime: string;
-  startTimestamp: number;
-  endTimestamp: number;
-  durationMs: number;
-  durationFormatted: string;
-  shift: string;
-  priority: StoppagePriority;
-  status: StoppageStatus;
-  machineStopped: boolean; // true garantido para Avaria Mecânica; flexível para Afinações
-  initiatedBy: string;
-  closedBy: string;
-  stoppageType: string;
-  stoppageDescription: string;
-  actionsTaken: string;
-  otherObservations?: string;
+### 2.2 `PageManualEntry.tsx` (Registo Manual Retroativo)
+- **Integração total do `StoppageTaxonomySelector`**:
+  - Quando o utilizador altera o tipo no ecrã de registo manual, os submenus abrem imediatamente.
+  - Sincronização dos campos estruturados (`springAdjustments`, `mechanicalAdjustments`, `machineStopped`, `isTuningIntervention`).
+- **Separação de erros**:
+  - Criação de `serverError: string | null`.
+  - Se `onSaveRecord` falhar (ex: PIN incorreto ou erro de ligação à nuvem), o erro é mostrado num banner de erro do sistema vermelho com texto explicativo (ex: *"PIN de autorização incorreto"* ou *"Falha de ligação à base de dados"*).
+  - O aviso *"Atenção: Por favor complete os campos em falta"* é reservado unicamente a campos de formulário efetivamente vazios (ex: falta preencher hora ou operador).
 
-  // Novos campos estruturados para taxonomia
-  springAdjustments?: string[];
-  mechanicalAdjustments?: MechanicalAdjustmentItem[];
-  isTuningIntervention?: boolean; // true para Afinação Mola e Afinação Mecânica
-}
-```
+### 2.3 `PageCloseStoppage.tsx` (Fecho da Máquina Ativa)
+- Aplicação das mesmas correções de separação de erros (`serverError`) e sincronização dos submenus de taxonomia.
+
+### 2.4 Backend `server.ts`
+- Ajustar `POST /api/stoppages` para que:
+  - O fecho de paragens ativas em curso seja aceite de forma fluida a partir do terminal da fábrica.
+  - No registo manual, o PIN do operador autorizado seja verificado e aceite sem desfasamentos de sessão.
+  - Respostas de erro incluam mensagens em português claras e sem ambiguidades.
 
 ---
 
-## 4. Fases de Execução
+## 3. Plano de Ficheiros a Modificar
 
-### Fase 1: Atualização dos Tipos no Catálogo & Constantes
-- Definir em `src/data/initialData.ts`:
-  - `st-mola`: **Afinação Mola**
-  - `st-afin-mec`: **Afinação Mecânica**
-  - `st-avaria-mec`: **Avaria Mecânica**
-  - `st-outro`: **Outro**
-- Garantir suporte a tipos históricos sem quebras.
-
-### Fase 2: Componente Reutilizável de Submenus (`StoppageTaxonomySelector`)
-- Construir o componente interativo que integra:
-  - Seleção dos 4 tipos de topo com cores e ícones industriais.
-  - Submenu de **Afinação Mola** com as 8 opções (`Fechar Baixo`, `Abrir Baixo`, etc.).
-  - Submenu de **Afinação Mecânica** com componentes (`Braços`, `Pica`, `Cabeça`, `Borboleta`, `Outro`) e badges interativos de tipo de afinação (`Curso`, `Tempo`, `Ajuste`).
-  - Submenu de **Avaria Mecânica** com aviso de paragem obrigatória e campo de observações.
-  - Regra de máquina parada automática:
-    - Se `Avaria Mecânica` -> `machineStopped` fica automaticamente marcado como `true`.
-    - Se `Afinação Mola` ou `Afinação Mecânica` -> indicação de tempo total de afinação com paragem flexível/marcha de ensaio.
-
-### Fase 3: Integração nas 3 Vistas Principais
-- `src/pages/PageCloseStoppage.tsx`: No fecho da paragem ativa pelos supervisores/operadores.
-- `src/pages/PageManualEntry.tsx`: No registo manual de paragens ou afinações.
-- `src/components/EditStoppageModal.tsx`: Na edição/correção de paragens existentes com autenticação por PIN.
-
-### Fase 4: Verificação & Testes
-- Validar sincronização de texto em tempo real (edição manual livre preservada).
-- Executar `compile_applet` e `lint_applet`.
-- Validar comportamento responsivo no telemóvel e no tablet de posto de trabalho.
+1. **`src/components/StoppageTaxonomySelector.tsx`**:
+   - Garantir apresentação instantânea dos submenus dos 4 tipos principais em qualquer ecrã onde o seletor esteja inserido.
+2. **`src/pages/PageManualEntry.tsx`**:
+   - Assegurar a ligação bidirecional com o seletor e isolamento do estado `serverError`.
+3. **`src/pages/PageCloseStoppage.tsx`**:
+   - Isolamento do estado `serverError` e ligação aos submenus.
+4. **`server.ts`**:
+   - Garantir validação de autorização estável para registos manuais e fechos ativos.
+5. **Verificação**:
+   - `compile_applet` e `lint_applet` para validação de integridade.

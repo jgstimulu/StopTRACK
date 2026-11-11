@@ -181,33 +181,45 @@ export const StoppageTaxonomySelector: React.FC<StoppageTaxonomySelectorProps> =
 }) => {
   const [customSpringNote, setCustomSpringNote] = useState<string>('');
 
-  // Active types configured in Admin. Falls back to the standard cards while settings load.
+  // Os 4 tipos oficiais de fábrica são sempre garantidos em primeiro plano
   const displayTypes = useMemo<StoppageTypeCard[]>(() => {
-    if (availableStoppageTypes.length === 0) return CORE_STOPPAGE_TYPES;
-
-    return availableStoppageTypes
-      .filter((type) => type.active)
-      .map((type) => {
-        const core = CORE_STOPPAGE_TYPES.find(
-          (item) => item.id === type.id || item.name === type.name
-        );
-        if (core) {
-          return {
-            ...core,
-            name: type.name,
-            color: type.color || core.color,
-            description: type.description || core.description,
-          };
-        }
+    // 1. Iniciar sempre com os 4 tipos padronizados oficiais
+    const result: StoppageTypeCard[] = CORE_STOPPAGE_TYPES.map((core) => {
+      const match = availableStoppageTypes.find(
+        (t) => t.id === core.id || t.name.trim().toLowerCase() === core.name.trim().toLowerCase()
+      );
+      if (match) {
         return {
-          id: type.id,
-          name: type.name,
-          color: type.color,
-          icon: Tag,
-          badgeText: 'Tipo Configurado',
-          description: type.description,
+          ...core,
+          color: match.color || core.color,
+          description: match.description || core.description,
         };
-      });
+      }
+      return core;
+    });
+
+    // 2. Adicionar quaisquer tipos ativos adicionais configurados na administração que não sejam os 4 de topo
+    if (availableStoppageTypes.length > 0) {
+      for (const customType of availableStoppageTypes) {
+        if (!customType.active) continue;
+        const lowerName = customType.name.trim().toLowerCase();
+        const alreadyIncluded = result.some(
+          (c) => c.id === customType.id || c.name.trim().toLowerCase() === lowerName
+        );
+        if (!alreadyIncluded) {
+          result.push({
+            id: customType.id,
+            name: customType.name,
+            color: customType.color || 'slate',
+            icon: Tag,
+            badgeText: 'Tipo Adicional',
+            description: customType.description,
+          });
+        }
+      }
+    }
+
+    return result;
   }, [availableStoppageTypes]);
 
   // Determine active primary type
@@ -580,7 +592,7 @@ export const StoppageTaxonomySelector: React.FC<StoppageTaxonomySelectorProps> =
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-rose-400" />
               <span className="text-xs font-bold uppercase tracking-wider text-rose-200">
-                Avaria Mecânica
+                Submenu: Avaria Mecânica
               </span>
             </div>
             <span className="text-[10px] text-rose-300 bg-rose-900/60 px-2 py-0.5 rounded font-mono border border-rose-700/50">
@@ -591,8 +603,29 @@ export const StoppageTaxonomySelector: React.FC<StoppageTaxonomySelectorProps> =
           <div className="flex items-start gap-2 rounded-lg bg-rose-950/40 border border-rose-800/40 p-2 text-[11px] text-rose-200/90">
             <Info className="h-3.5 w-3.5 text-rose-400 shrink-0 mt-0.5" />
             <p className="leading-snug">
-              <strong>Paragem obrigatória da máquina:</strong> A avaria mecânica impede o funcionamento da produção. A máquina fica registada como parada.
+              <strong>Paragem física da máquina:</strong> A avaria mecânica impede o funcionamento da produção. A máquina fica registada como parada.
             </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+            <div className="flex items-center gap-2.5 rounded-xl border border-rose-500/60 bg-rose-900/40 p-3 text-xs text-rose-100">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-rose-500 text-slate-950 font-black">
+                <Check className="h-4 w-4 stroke-[3]" />
+              </span>
+              <div>
+                <span className="font-bold text-white block">Parada (Garantida)</span>
+                <span className="text-[10px] text-rose-300/90">Máquina parada por quebra mecânica</span>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-700/80 bg-slate-800/80 p-3 text-xs text-slate-300">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-rose-300 block mb-1">
+                Observações Técnicas:
+              </span>
+              <p className="text-[10px] text-slate-400 leading-tight">
+                Indique o componente mecânico avariado e a reparação efetuada nos campos de texto abaixo.
+              </p>
+            </div>
           </div>
         </div>
       )}

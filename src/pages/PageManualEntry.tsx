@@ -179,6 +179,7 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
 
   // Validation & Saving
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
+  const [serverError, setServerError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
   // Selected Machine object
@@ -389,14 +390,12 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
 
 
     setIsSaving(true);
+    setServerError(null);
     try {
       await onSaveRecord(record, closedByOperatorId, closerPin);
       playSuccessChime();
     } catch (error) {
-      setErrors((previous) => ({
-        ...previous,
-        closedBy: error instanceof Error ? error.message : 'Não foi possível guardar a paragem.',
-      }));
+      setServerError(error instanceof Error ? error.message : 'Não foi possível guardar a paragem na nuvem.');
       setIsSaving(false);
     }
   };
@@ -1108,6 +1107,17 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
 
         {/* Bottom Action - Wireframe "Gravar e sair" (MATCHING PAGECLOSESTOPPAGE STANDARD) */}
         <div className="pt-2 pb-6">
+          {/* Server Error Notice */}
+          {serverError && (
+            <div className="mb-3 rounded-xl border-2 border-rose-500 bg-rose-950/95 p-3.5 text-xs text-rose-200 shadow-xl space-y-1 animate-in fade-in">
+              <div className="flex items-center gap-2 font-black text-rose-300 uppercase tracking-wide">
+                <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+                <span>Falha ao Guardar a Paragem</span>
+              </div>
+              <p className="pl-6 text-[11px] text-white font-medium">{serverError}</p>
+            </div>
+          )}
+
           {/* Validation Errors Notice */}
           {Object.keys(errors).length > 0 && (
             <div className="mb-3 rounded-xl border-2 border-rose-500 bg-rose-950/90 p-3.5 text-xs text-rose-200 shadow-xl space-y-2 animate-in fade-in">

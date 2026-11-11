@@ -553,8 +553,12 @@ export default function App() {
 
   // Handler for manual retrospective stoppage entry
   const handleSaveManualRecord = async (newRecord: StoppageRecord, operatorId: string, pin: string) => {
-    await apiOperatorLogin(operatorId, pin);
-    await apiSaveStoppage(newRecord, true);
+    try {
+      await apiOperatorLogin(operatorId, pin);
+    } catch (loginErr) {
+      console.warn('Operator session login warning, proceeding with direct PIN verification:', loginErr);
+    }
+    await apiSaveStoppage(newRecord, true, pin);
     const updated = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
     setRecords(updated);
     localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updated));

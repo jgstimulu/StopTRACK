@@ -16,7 +16,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+// Dev server and container reverse-proxy expect the app to listen on port 3000
+const PORT = 3000;
 
 /**
  * Número de proxies à frente da aplicação, para que req.ip seja o IP real do cliente
@@ -45,15 +46,18 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 const DEFAULT_OPERATORS: any[] = [];
 
 const DEFAULT_STOPPAGE_TYPES = [
-  { id: 'st-1', name: 'Avaria Mecânica', color: 'rose', description: 'Rolamentos, correias, engrenagens, quebras estruturais', active: true },
-  { id: 'st-2', name: 'Avaria Elétrica', color: 'amber', description: 'Motores, sensores, disjuntores, cablagem, PLCs', active: true },
-  { id: 'st-3', name: 'Problema Pneumático / Hidráulico', color: 'sky', description: 'Fugas de ar, cilindros, válvulas solenóide, pressão de óleo', active: true },
-  { id: 'st-4', name: 'Falta de Matéria-Prima', color: 'orange', description: 'Ausência de bobines, caixas, químicos ou insumos', active: true },
-  { id: 'st-5', name: 'Setup / Mudança de Formato', color: 'indigo', description: 'Ajuste de moldes, troca de ferramentas, afinação', active: true },
-  { id: 'st-6', name: 'Limpeza e Higienização', color: 'emerald', description: 'Lavagem de linha, aspiração, desinfeção', active: true },
-  { id: 'st-7', name: 'Manutenção Preventiva', color: 'blue', description: 'Revisão periódica programada, lubrificação', active: true },
-  { id: 'st-8', name: 'Qualidade / Afinação', color: 'purple', description: 'Desvio de tolerâncias, defeito de produto, amostras', active: true },
-  { id: 'st-9', name: 'Operacional / Outro', color: 'slate', description: 'Pausa operacional, falta de operador, outros motivos', active: true },
+  { id: 'st-mola', name: 'Afinação Mola', color: 'amber', description: 'Fechar Baixo, Abrir Baixo, Corrigir Espiral, Abrir/Fechar Todo, Escada, Mola', active: true },
+  { id: 'st-afin-mec', name: 'Afinação Mecânica', color: 'blue', description: 'Braços, Pica, Cabeça, Borboleta (Curso, Tempo, Ajuste)', active: true },
+  { id: 'st-1', name: 'Avaria Mecânica', color: 'rose', description: 'Paragem mecânica garantida da máquina, componentes danificados e quebras', active: true },
+  { id: 'st-outro', name: 'Outro', color: 'slate', description: 'Pausa operacional, intervenção específica ou outras observações', active: true },
+  // Tipos históricos preservados para retrocompatibilidade
+  { id: 'st-2', name: 'Avaria Elétrica', color: 'amber', description: 'Motores, sensores, disjuntores, cablagem, PLCs', active: false },
+  { id: 'st-3', name: 'Problema Pneumático / Hidráulico', color: 'sky', description: 'Fugas de ar, cilindros, válvulas solenóide, pressão de óleo', active: false },
+  { id: 'st-4', name: 'Falta de Matéria-Prima', color: 'orange', description: 'Ausência de bobines, caixas, químicos ou insumos', active: false },
+  { id: 'st-5', name: 'Setup / Mudança de Formato', color: 'indigo', description: 'Ajuste de moldes, troca de ferramentas, afinação', active: false },
+  { id: 'st-6', name: 'Limpeza e Higienização', color: 'emerald', description: 'Lavagem de linha, aspiração, desinfeção', active: false },
+  { id: 'st-7', name: 'Manutenção Preventiva', color: 'blue', description: 'Revisão periódica programada, lubrificação', active: false },
+  { id: 'st-8', name: 'Qualidade / Afinação', color: 'purple', description: 'Desvio de tolerâncias, defeito de produto, amostras', active: false },
 ];
 
 const DEFAULT_STOPPAGES_SEED: any[] = [];
@@ -303,9 +307,19 @@ async function initializeSupabaseStorage(): Promise<void> {
         await supabaseStore.saveAdminCredentials(legacy.admin);
       }
 
-      const stoppageTypes = await supabaseStore.getStoppageTypes();
+      const stoppageTypes = await supabaseStore.getStoppageTypes().catch(() => []);
       if (!stoppageTypes.length) {
-        await supabaseStore.importStoppageTypes(legacy.stoppageTypes.length ? legacy.stoppageTypes : DEFAULT_STOPPAGE_TYPES);
+        await supabaseStore.importStoppageTypes(DEFAULT_STOPPAGE_TYPES).catch(() => {});
+      } else {
+        const existingNames = new Set(stoppageTypes.map((t) => t.name.toLowerCase()));
+        const missingCore = DEFAULT_STOPPAGE_TYPES.filter(
+          (t) => !existingNames.has(t.name.toLowerCase())
+        );
+        if (missingCore.length > 0) {
+          await supabaseStore.importStoppageTypes(missingCore).catch((err) => {
+            console.warn('Could not upsert standard stoppage types to Supabase:', err);
+          });
+        }
       }
 
       if (!(await supabaseStore.getStoppages()).length && legacy.stoppages.length) {
@@ -736,17 +750,34 @@ app.post('/api/stoppages', async (req, res) => {
   }
 
   try {
-    const activeDowntime = await supabaseStore.getActiveDowntime(machineId);
-    const isClosingActiveDowntime = activeDowntime?.startTimestamp === incoming.startTimestamp;
-    const session = await getSession(req);
-    if (
-      !isClosingActiveDowntime &&
-      session?.role !== 'admin' &&
-      !(session?.role === 'operator' && session.canClose)
-    ) {
-      return res.status(session ? 403 : 401).json({
-        error: 'É necessária uma sessão de operador autorizado para registar uma paragem manual.',
-      });
+    const activeDowntime = await supabaseStore.getActiveDowntime(machineId).catch(() => null);
+    const incomingStart = Number(incoming.startTimestamp) || 0;
+    const activeStart = Number(activeDowntime?.startTimestamp) || 0;
+    const isClosingActiveDowntime =
+      Boolean(activeDowntime) &&
+      (Math.abs(activeStart - incomingStart) < 60000 || incoming.id.startsWith('stop-'));
+    const isStationClosure = incoming.id.startsWith('stop-') || isClosingActiveDowntime;
+
+    // Se for registo manual retroativo (não fecho de máquina ativa), validar sessão ou PIN
+    if (!isStationClosure) {
+      const session = await getSession(req);
+      const isSessionAuthorized =
+        session?.role === 'admin' || (session?.role === 'operator' && session.canClose);
+
+      let isPinAuthorized = false;
+      const pinHeader = req.headers['x-operator-pin'] || req.headers['x-deletion-pin'];
+      const pinBody = req.body?.pin;
+      const providedPin = (pinHeader || pinBody || '').toString().trim();
+
+      if (!isSessionAuthorized && providedPin) {
+        isPinAuthorized = await verifyAuthorizationPin(providedPin);
+      }
+
+      if (!isSessionAuthorized && !isPinAuthorized) {
+        return res.status(401).json({
+          error: 'É necessário um PIN de operador autorizado ou sessão ativa para registar uma paragem manual.',
+        });
+      }
     }
 
     // Só os campos conhecidos são guardados (ver server/stoppageSanitizer.ts).
