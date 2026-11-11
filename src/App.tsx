@@ -15,6 +15,7 @@ import {
   StoppageStageLevel,
   StoppageTemplate,
 } from './types/manutrack';
+import type { DailyMachinePlan } from './services/api';
 import {
   MACHINES_DATA,
   INITIAL_STOPPAGE_TYPES,
@@ -51,6 +52,7 @@ import {
   apiAdminLogin,
   apiAdminLogout,
   apiOperatorLogout,
+  apiSetDailyMachinePlanned,
   ApiError,
   hasStoredSession,
   clearAdminToken,
@@ -87,6 +89,10 @@ export default function App() {
 
   // Backend state: Operators and Stoppage Types
   const [operators, setOperators] = useState<Operator[]>([]);
+  const [dailyMachinePlan, setDailyMachinePlan] = useState<DailyMachinePlan>({
+    date: '',
+    machineIds: [],
+  });
 
   const [stoppageTypes, setStoppageTypes] = useState<StoppageTypeItem[]>(() => {
     try {
@@ -113,6 +119,7 @@ export default function App() {
   const [isBootstrapping, setIsBootstrapping] = useState<boolean>(() => hasStoredSession());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const cloudStateVersionRef = useRef(0);
+  const dailyMachinePlanVersionRef = useRef(0);
   const isSavingStoppageRef = useRef(false);
   const isSyncInProgressRef = useRef(false);
 
@@ -183,6 +190,7 @@ export default function App() {
       console.warn('Não foi possível ler a fila local de paragens antes de limpar a sessão.', error);
     }
     setOperators([]);
+    setDailyMachinePlan({ date: '', machineIds: [] });
     setActiveDowntimes([]);
     setRecords(pending);
     setFocusedDowntime(null);
@@ -207,12 +215,17 @@ export default function App() {
     if (isSavingStoppageRef.current || isSyncInProgressRef.current) return;
     isSyncInProgressRef.current = true;
     const syncVersion = cloudStateVersionRef.current;
+    const dailyPlanVersion = dailyMachinePlanVersionRef.current;
 
     try {
       setIsSyncing(true);
       const state = await fetchSharedState();
       if (isSavingStoppageRef.current || syncVersion !== cloudStateVersionRef.current) return;
       setIsBackendConnected(true);
+
+      if (dailyPlanVersion === dailyMachinePlanVersionRef.current) {
+        setDailyMachinePlan(state.dailyMachinePlan);
+      }
 
       // 1. Sync Operators with local merge (only trigger re-render if actually changed)
       if (Array.isArray(state.operators)) {
@@ -459,7 +472,19 @@ export default function App() {
     setCurrentPage('select_machine');
   };
 
-  // Page 2: Machine clicked -> immediately start downtime timer in cloud & go to Page 3
+  const handleSetDailyMachinePlanned = async (machine: Machine, planned: boolean) => {
+    const result = await apiSetDailyMachinePlanned(machine.code, planned);
+    dailyMachinePlanVersionRef.current += 1;
+    setDailyMachinePlan((current) => {
+      const currentIds = result.date === current.date ? current.machineIds : [];
+      const machineIds = new Set(currentIds);
+      if (result.planned) machineIds.add(result.machineId);
+      else machineIds.delete(result.machineId);
+      return { date: result.date, machineIds: [...machineIds].sort() };
+    });
+  };
+
+  // Page 2: A planned machine starts its downtime timer in the cloud & opens Page 3
   const handleSelectMachine = async (
     machine: Machine,
     operator: string,
@@ -953,6 +978,8 @@ export default function App() {
             onSetOperator={setCurrentOperator}
             availableOperators={operators}
             onOpenAdmin={() => setCurrentPage('admin')}
+            dailyMachinePlan={dailyMachinePlan}
+            onSetDailyMachinePlanned={handleSetDailyMachinePlanned}
           />
         )}
 

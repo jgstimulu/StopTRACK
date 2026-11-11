@@ -15,6 +15,11 @@ import {
   canWriteStoppage,
   matchesActiveStoppageClosure,
 } from './server/stoppageAuthorization';
+import {
+  canStartMachine,
+  getFactoryDate,
+  isValidMachineCode,
+} from './server/dailyMachinePlan';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -632,12 +637,14 @@ app.post('/api/operators/logout', async (req, res) => {
 // 2. Complete application state shared by every workstation. Requires an authenticated session.
 app.get('/api/state', requireSession, async (_req, res) => {
   try {
-    const [operators, stoppageTypes, activeDowntimes, stoppages, stoppageTemplates] = await Promise.all([
+    const planDate = getFactoryDate();
+    const [operators, stoppageTypes, activeDowntimes, stoppages, stoppageTemplates, plannedMachineIds] = await Promise.all([
       supabaseStore.getOperators(),
       supabaseStore.getStoppageTypes(),
       supabaseStore.getActiveDowntimes(),
       supabaseStore.getStoppages(),
       supabaseStore.getStoppageTemplates(),
+      supabaseStore.getDailyMachinePlan(planDate),
     ]);
     res.json({
       operators: publicOperators(operators),
@@ -645,9 +652,26 @@ app.get('/api/state', requireSession, async (_req, res) => {
       activeDowntimes,
       stoppages,
       stoppageTemplates,
+      dailyMachinePlan: { date: planDate, machineIds: plannedMachineIds },
       serverTime: Date.now(),
       updatedAt: Date.now(),
     });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.put('/api/daily-machine-plan/:machineId', requireSession, async (req, res) => {
+  const machineId = req.params.machineId.trim().toUpperCase();
+  const { planned } = req.body || {};
+  if (!isValidMachineCode(machineId) || typeof planned !== 'boolean') {
+    return res.status(400).json({ error: 'Dados inválidos para atualizar o plano diário de máquinas.' });
+  }
+
+  try {
+    const planDate = getFactoryDate();
+    await supabaseStore.setDailyMachinePlanned(planDate, machineId, planned);
+    res.json({ date: planDate, machineId, planned });
   } catch (error) {
     return respondWithStoreError(res, error);
   }
@@ -691,6 +715,14 @@ app.post('/api/active-stoppages', async (req, res) => {
       return res.status(session ? 403 : 401).json({
         error: existing ? 'É necessária a permissão para atualizar paragens.' : 'É necessária a permissão para iniciar paragens.',
       });
+    }
+    if (!existing) {
+      const plannedMachineIds = await supabaseStore.getDailyMachinePlan(getFactoryDate());
+      if (!canStartMachine(machineId, plannedMachineIds, false)) {
+        return res.status(403).json({
+          error: 'Esta máquina não está incluída no plano de produção de hoje. Atualize o plano antes de iniciar uma paragem.',
+        });
+      }
     }
     if (!existing && session?.role === 'operator') {
       const operator = await supabaseStore.getOperator(session.operatorId || '');

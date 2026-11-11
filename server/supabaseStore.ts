@@ -61,6 +61,10 @@ type StoppageTemplateRow = {
   active: boolean;
   display_order: number;
 };
+type DailyMachinePlanRow = {
+  plan_date: string;
+  machine_id: string;
+};
 type SessionRow = {
   token_hash: string;
   role: 'admin' | 'operator';
@@ -219,6 +223,36 @@ export async function getStoppageTypes() {
   return rows.map(({ id, name, color, description, active }) => ({
     id, name, color, description, active,
   }));
+}
+
+export async function getDailyMachinePlan(date: string): Promise<string[]> {
+  const query = new URLSearchParams({
+    select: 'machine_id',
+    plan_date: `eq.${date}`,
+    order: 'machine_id.asc',
+  });
+  const rows = await request<DailyMachinePlanRow[]>(`/daily_machine_plan?${query}`);
+  return (rows || []).map((row) => row.machine_id);
+}
+
+export async function setDailyMachinePlanned(
+  date: string,
+  machineId: string,
+  planned: boolean
+): Promise<void> {
+  const query = new URLSearchParams({
+    plan_date: `eq.${date}`,
+    machine_id: `eq.${machineId}`,
+  });
+  if (!planned) {
+    await request(`/daily_machine_plan?${query}`, { method: 'DELETE' });
+    return;
+  }
+  await request('/daily_machine_plan?on_conflict=plan_date,machine_id', {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ plan_date: date, machine_id: machineId }),
+  });
 }
 
 export async function createStoppageType(stoppageType: Record<string, unknown> & { id: string }) {

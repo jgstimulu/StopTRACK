@@ -6,9 +6,15 @@ export interface SharedPlantState {
   stoppageTemplates?: StoppageTemplate[];
   activeDowntimes: ActiveDowntime[];
   stoppages: StoppageRecord[];
+  dailyMachinePlan: DailyMachinePlan;
   adminEmail?: string;
   serverTime: number;
   updatedAt: number;
+}
+
+export interface DailyMachinePlan {
+  date: string;
+  machineIds: string[];
 }
 
 
@@ -210,6 +216,28 @@ export async function apiStartActiveDowntime(downtime: ActiveDowntime): Promise<
   });
   if (!res.ok) throw await responseError(res, 'Falha ao registar paragem ativa na nuvem.');
   return await res.json();
+}
+
+export async function apiSetDailyMachinePlanned(
+  machineId: string,
+  planned: boolean
+): Promise<{ date: string; machineId: string; planned: boolean }> {
+  const tokens = [getOperatorToken(), getAdminToken()].filter((token): token is string => Boolean(token));
+  if (!tokens.length) {
+    throw new ApiError('Sessão necessária. Inicie sessão para continuar.', 401);
+  }
+  let lastError: ApiError = new ApiError('Falha ao atualizar o plano diário de máquinas.', 500);
+  for (const token of tokens) {
+    const res = await fetch(`/api/daily-machine-plan/${encodeURIComponent(machineId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ planned }),
+    });
+    if (res.ok) return await res.json();
+    lastError = await responseError(res, 'Falha ao atualizar o plano diário de máquinas.');
+    if (res.status !== 401) throw lastError;
+  }
+  throw lastError;
 }
 
 export async function apiCancelActiveDowntime(machineId: string): Promise<void> {
