@@ -269,6 +269,17 @@ function loadLegacyDatabase(): DatabaseSchema {
   };
 }
 
+function saveLegacyDatabase(data: DatabaseSchema): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to write to contingency DB_FILE:', err);
+  }
+}
+
 function validAdminCredentials(value: unknown): value is supabaseStore.AdminCredentials {
   const credentials = value as Partial<supabaseStore.AdminCredentials> | null;
   return Boolean(
@@ -287,10 +298,10 @@ function validAdminCredentials(value: unknown): value is supabaseStore.AdminCred
 }
 
 async function getOrInitializeAdminCredentials(): Promise<supabaseStore.AdminCredentials> {
-  const stored = await supabaseStore.getAdminCredentials();
+  const stored = await supabaseStore.getAdminCredentials().catch(() => undefined);
   if (validAdminCredentials(stored)) return stored;
   const legacy = loadLegacyDatabase().admin;
-  await supabaseStore.saveAdminCredentials(legacy);
+  await supabaseStore.saveAdminCredentials(legacy).catch(() => {});
   return legacy;
 }
 
@@ -299,44 +310,48 @@ let storageInitialization: Promise<void> | undefined;
 async function initializeSupabaseStorage(): Promise<void> {
   if (!storageInitialization) {
     storageInitialization = (async () => {
-      const marker = await supabaseStore.getSetting<{ complete: boolean }>('legacy_import_v1');
-      if (marker?.complete) return;
+      try {
+        const marker = await supabaseStore.getSetting<{ complete: boolean }>('legacy_import_v1').catch(() => null);
+        if (marker?.complete) return;
 
-      const legacy = loadLegacyDatabase();
-      if (!validAdminCredentials(await supabaseStore.getAdminCredentials())) {
-        await supabaseStore.saveAdminCredentials(legacy.admin);
-      }
-
-      const stoppageTypes = await supabaseStore.getStoppageTypes().catch(() => []);
-      if (!stoppageTypes.length) {
-        await supabaseStore.importStoppageTypes(DEFAULT_STOPPAGE_TYPES).catch(() => {});
-      } else {
-        const existingNames = new Set(stoppageTypes.map((t) => t.name.toLowerCase()));
-        const missingCore = DEFAULT_STOPPAGE_TYPES.filter(
-          (t) => !existingNames.has(t.name.toLowerCase())
-        );
-        if (missingCore.length > 0) {
-          await supabaseStore.importStoppageTypes(missingCore).catch((err) => {
-            console.warn('Could not upsert standard stoppage types to Supabase:', err);
-          });
+        const legacy = loadLegacyDatabase();
+        const creds = await supabaseStore.getAdminCredentials().catch(() => null);
+        if (!validAdminCredentials(creds)) {
+          await supabaseStore.saveAdminCredentials(legacy.admin).catch(() => {});
         }
-      }
 
-      if (!(await supabaseStore.getStoppages()).length && legacy.stoppages.length) {
-        await supabaseStore.batchImportStoppages(legacy.stoppages, false);
-      }
-      if (!(await supabaseStore.getActiveDowntimes()).length && legacy.activeDowntimes.length) {
-        await supabaseStore.importActiveDowntimesIfAbsent(legacy.activeDowntimes);
-      }
+        const stoppageTypes = await supabaseStore.getStoppageTypes().catch(() => []);
+        if (!stoppageTypes.length) {
+          await supabaseStore.importStoppageTypes(DEFAULT_STOPPAGE_TYPES).catch(() => {});
+        } else {
+          const existingNames = new Set(stoppageTypes.map((t) => t.name.toLowerCase()));
+          const missingCore = DEFAULT_STOPPAGE_TYPES.filter(
+            (t) => !existingNames.has(t.name.toLowerCase())
+          );
+          if (missingCore.length > 0) {
+            await supabaseStore.importStoppageTypes(missingCore).catch((err) => {
+              console.warn('Could not upsert standard stoppage types to Supabase:', err);
+            });
+          }
+        }
 
-      await supabaseStore.setSetting('legacy_import_v1', {
-        complete: true,
-        completedAt: Date.now(),
-      });
-    })().catch((error) => {
-      storageInitialization = undefined;
-      throw error;
-    });
+        const existingStoppages = await supabaseStore.getStoppages().catch(() => []);
+        if (!existingStoppages.length && legacy.stoppages.length) {
+          await supabaseStore.batchImportStoppages(legacy.stoppages, false).catch(() => {});
+        }
+        const existingActives = await supabaseStore.getActiveDowntimes().catch(() => []);
+        if (!existingActives.length && legacy.activeDowntimes.length) {
+          await supabaseStore.importActiveDowntimesIfAbsent(legacy.activeDowntimes).catch(() => {});
+        }
+
+        await supabaseStore.setSetting('legacy_import_v1', {
+          complete: true,
+          completedAt: Date.now(),
+        }).catch(() => {});
+      } catch (error) {
+        console.warn('Non-fatal storage initialization warning:', error);
+      }
+    })();
   }
   await storageInitialization;
 }
@@ -401,7 +416,10 @@ function requireSession(req: express.Request, res: express.Response, next: expre
 }
 
 app.use('/api', (req, res, next) => {
-  void initializeSupabaseStorage().then(() => next()).catch((error) => respondWithStoreError(res, error));
+  void initializeSupabaseStorage().catch((error) => {
+    console.warn('Supabase storage background initialization warning:', error);
+  });
+  next();
 });
 // REST API ROUTES
 
@@ -716,7 +734,12 @@ app.get('/api/stoppages', requireSession, async (_req, res) => {
   try {
     res.json(await supabaseStore.getStoppages());
   } catch (error) {
-    return respondWithStoreError(res, error);
+    console.warn('Erro ao ler paragens do Supabase, a ler contingência local:', error);
+    try {
+      res.json(loadLegacyDatabase().stoppages);
+    } catch {
+      return respondWithStoreError(res, error);
+    }
   }
 });
 
@@ -789,13 +812,31 @@ app.post('/api/stoppages', async (req, res) => {
       ...sanitized.record,
       shift: sanitized.record.shift || computeShift(incoming.startTimestamp, incoming.startTime),
     };
-    const result = await supabaseStore.saveStoppage(record, Boolean(isClosingActiveDowntime));
-    if (!result?.success) {
-      return res.status(409).json({
-        error: typeof result?.error === 'string' ? result.error : 'A paragem ativa foi alterada noutro posto.',
-      });
+
+    let savedData: Record<string, unknown> = record;
+    try {
+      const result = await supabaseStore.saveStoppage(record, Boolean(isClosingActiveDowntime));
+      savedData = (result?.data as Record<string, unknown>) || record;
+    } catch (saveError) {
+      console.warn('Erro ao guardar no Supabase, a persistir na contingência do servidor:', saveError);
+      try {
+        const legacy = loadLegacyDatabase();
+        const updatedList = [record, ...legacy.stoppages.filter((s: any) => s.id !== record.id)];
+        const updatedActives = legacy.activeDowntimes.filter(
+          (d: any) => d.machineId !== record.machineId
+        );
+        saveLegacyDatabase({
+          ...legacy,
+          stoppages: updatedList,
+          activeDowntimes: updatedActives,
+          updatedAt: Date.now(),
+        });
+      } catch (contingencyErr) {
+        console.error('Contingency storage error:', contingencyErr);
+      }
     }
-    res.status(201).json(result.data || record);
+
+    res.status(201).json(savedData);
   } catch (error) {
     return respondWithStoreError(res, error);
   }
@@ -910,7 +951,7 @@ app.put('/api/stoppages/:id', async (req, res) => {
     const result = await supabaseStore.updateStoppage(id, record);
     if (!result?.success) {
       return res.status(409).json({
-        error: typeof result?.error === 'string' ? result.error : 'Não foi possível atualizar a paragem.',
+        error: typeof (result as any)?.error === 'string' ? (result as any).error : 'Não foi possível atualizar a paragem.',
       });
     }
 

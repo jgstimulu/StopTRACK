@@ -215,19 +215,35 @@ export default function App() {
         }
       }
 
-      // 4. Sync Stoppages History (CRITICAL: Never overwrite with empty list!)
+      // 4. Sync Stoppages History (CRITICAL: Preservar registos locais pendentes de envio e sincronizar em segundo plano)
       if (Array.isArray(state.stoppages)) {
         const cleanServerStoppages = state.stoppages.filter(
           (r: any) => r && r.id && !r.id.startsWith('seed-')
         );
 
-        const mergedRecords = [...cleanServerStoppages].sort(
+        // Identificar registos locais pendentes que ainda não estejam na nuvem
+        const localPending = records.filter(
+          (r) => r.pendingSync && !cleanServerStoppages.some((s: any) => s.id === r.id)
+        );
+
+        const mergedRecords = [...localPending, ...cleanServerStoppages].sort(
           (a, b) => (b.startTimestamp || b.createdAt || 0) - (a.startTimestamp || a.createdAt || 0)
         );
 
         setRecords(mergedRecords);
         localStorage.setItem('manutrack_stoppages_history', JSON.stringify(mergedRecords));
 
+        // Sincronização em segundo plano para paragens pendentes
+        if (localPending.length > 0) {
+          for (const pending of localPending) {
+            try {
+              await apiSaveStoppage(pending);
+              pending.pendingSync = false;
+            } catch (syncErr) {
+              console.warn('Sincronização em segundo plano adiada para', pending.id, syncErr);
+            }
+          }
+        }
       }
     } catch (error) {
       setIsBackendConnected(false);
@@ -479,26 +495,38 @@ export default function App() {
   const handleSaveAndExit = async (newRecord: StoppageRecord) => {
     isSavingStoppageRef.current = true;
     cloudStateVersionRef.current += 1;
+
+    // 1. Salvaguarda imediata no dispositivo com pendingSync (o registo NUNCA se perde)
+    const cleanMachineId = newRecord.machineId.trim().toUpperCase();
+    const pendingRecord: StoppageRecord = { ...newRecord, pendingSync: true };
+    const localRecords = [pendingRecord, ...records.filter((record) => record.id !== newRecord.id)];
+    const remainingActive = activeDowntimes.filter(
+      (downtime) => downtime.machineId.trim().toUpperCase() !== cleanMachineId
+    );
+
+    setRecords(localRecords);
+    setActiveDowntimes(remainingActive);
+    setFocusedDowntime(null);
+    setStopEndTimestamp(0);
+    localStorage.setItem('manutrack_stoppages_history', JSON.stringify(localRecords));
+    localStorage.setItem('manutrack_active_downtimes', JSON.stringify(remainingActive));
+
+    // 2. Tentar gravação na nuvem central
     try {
       await apiSaveStoppage(newRecord);
-      // Explicitly delete from active downtimes on the server
       await apiCancelActiveDowntime(newRecord.machineId).catch(() => {});
 
-      const cleanMachineId = newRecord.machineId.trim().toUpperCase();
-      const updatedRecords = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
-      const remainingActive = activeDowntimes.filter(
-        (downtime) => downtime.machineId.trim().toUpperCase() !== cleanMachineId
-      );
-      setRecords(updatedRecords);
-      setActiveDowntimes(remainingActive);
-      setFocusedDowntime(null);
-      setStopEndTimestamp(0);
-      localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updatedRecords));
-      localStorage.setItem('manutrack_active_downtimes', JSON.stringify(remainingActive));
-      setToastMessage(`Paragem da ${newRecord.machineId} registada com sucesso (${newRecord.durationFormatted})!`);
-      setCurrentPage('home');
+      const syncedRecord: StoppageRecord = { ...newRecord, pendingSync: false };
+      const syncedList = [syncedRecord, ...records.filter((record) => record.id !== newRecord.id)];
+      setRecords(syncedList);
+      localStorage.setItem('manutrack_stoppages_history', JSON.stringify(syncedList));
+      setToastMessage(`Paragem da ${newRecord.machineId} registada com sucesso na nuvem (${newRecord.durationFormatted})!`);
+    } catch (error) {
+      console.warn('Gravação na nuvem falhou ou offline; mantida localmente para sincronização:', error);
+      setToastMessage(`Paragem da ${newRecord.machineId} guardada no dispositivo! A sincronização será concluída em segundo plano.`);
     } finally {
       isSavingStoppageRef.current = false;
+      setCurrentPage('home');
     }
   };
 
@@ -553,17 +581,36 @@ export default function App() {
 
   // Handler for manual retrospective stoppage entry
   const handleSaveManualRecord = async (newRecord: StoppageRecord, operatorId: string, pin: string) => {
+    isSavingStoppageRef.current = true;
+    cloudStateVersionRef.current += 1;
+
+    // 1. Salvaguarda imediata no dispositivo com pendingSync
+    const pendingRecord: StoppageRecord = { ...newRecord, pendingSync: true };
+    const localRecords = [pendingRecord, ...records.filter((record) => record.id !== newRecord.id)];
+    setRecords(localRecords);
+    localStorage.setItem('manutrack_stoppages_history', JSON.stringify(localRecords));
+
+    // 2. Tentar gravação na nuvem central
     try {
-      await apiOperatorLogin(operatorId, pin);
-    } catch (loginErr) {
-      console.warn('Operator session login warning, proceeding with direct PIN verification:', loginErr);
+      try {
+        await apiOperatorLogin(operatorId, pin);
+      } catch (loginErr) {
+        console.warn('Operator session login warning, proceeding with direct PIN verification:', loginErr);
+      }
+      await apiSaveStoppage(newRecord, true, pin);
+
+      const syncedRecord: StoppageRecord = { ...newRecord, pendingSync: false };
+      const syncedList = [syncedRecord, ...records.filter((record) => record.id !== newRecord.id)];
+      setRecords(syncedList);
+      localStorage.setItem('manutrack_stoppages_history', JSON.stringify(syncedList));
+      setToastMessage(`Paragem da ${newRecord.machineId} inserida manualmente com sucesso!`);
+    } catch (error) {
+      console.warn('Gravação manual na nuvem adiada para sincronização em segundo plano:', error);
+      setToastMessage(`Paragem da ${newRecord.machineId} guardada no dispositivo! A sincronização será concluída em segundo plano.`);
+    } finally {
+      isSavingStoppageRef.current = false;
+      setCurrentPage('history');
     }
-    await apiSaveStoppage(newRecord, true, pin);
-    const updated = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
-    setRecords(updated);
-    localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updated));
-    setToastMessage(`Paragem da ${newRecord.machineId} inserida manualmente com sucesso!`);
-    setCurrentPage('history');
   };
 
   // Handler to update active downtime details (e.g. assigned technician, stage)

@@ -602,15 +602,49 @@ export async function saveStoppage(
   record: Record<string, unknown> & { id: string; machineId: string; startTimestamp: number; startTime: string; date: string; createdAt: number },
   expectedActive: boolean
 ) {
-  return request<Record<string, unknown>>('/rpc/save_stoppage_and_clear_active', {
+  const normalizedMachineId = normalizeMachineId(record.machineId);
+
+  // 1. Tentar executar o RPC transacional
+  try {
+    const rpcResult = await request<Record<string, unknown>>('/rpc/save_stoppage_and_clear_active', {
+      method: 'POST',
+      body: JSON.stringify({
+        p_record: record,
+        p_machine_id: normalizedMachineId,
+        p_start_timestamp: record.startTimestamp,
+        p_expected_active: expectedActive,
+      }),
+    });
+
+    if (rpcResult && rpcResult.success !== false) {
+      return { success: true, data: rpcResult.data || record };
+    }
+    console.warn('RPC save_stoppage_and_clear_active reportou desfasamento ou erro:', rpcResult);
+  } catch (rpcErr) {
+    console.warn('Falha na chamada RPC save_stoppage_and_clear_active, a aplicar fallback de inserção direta:', rpcErr);
+  }
+
+  // 2. Fallback de Gravação Garantida: Gravar sempre na tabela stoppages e limpar active_stoppages
+  const row: StoppageRow = {
+    id: record.id,
+    machine_id: normalizedMachineId,
+    date: record.date,
+    start_time: record.startTime,
+    start_timestamp: record.startTimestamp,
+    created_at: record.createdAt || Date.now(),
+    data: record,
+  };
+
+  await request('/stoppages?on_conflict=id', {
     method: 'POST',
-    body: JSON.stringify({
-      p_record: record,
-      p_machine_id: normalizeMachineId(record.machineId),
-      p_start_timestamp: record.startTimestamp,
-      p_expected_active: expectedActive,
-    }),
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(row),
   });
+
+  // Limpar a paragem ativa para desocupar a máquina na fábrica
+  await deleteActiveDowntime(normalizedMachineId).catch(() => {});
+
+  return { success: true, data: record };
 }
 
 export async function updateStoppage(

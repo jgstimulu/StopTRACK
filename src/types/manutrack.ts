@@ -131,6 +131,7 @@ export interface StoppageRecord {
   mechanicalAdjustments?: MechanicalAdjustmentItem[];
   isTuningIntervention?: boolean;
   stages?: StoppageStage[]; // Decomposição cronológica da intervenção por etapas
+  pendingSync?: boolean; // Verdadeiro quando guardado localmente e a aguardar sincronização com nuvem
   createdAt: number;
 }
 

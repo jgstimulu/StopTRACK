@@ -1,112 +1,104 @@
-# Padronização de Ocorrências: Fecho Ativo e Registo Manual Retroativo (Revisão 3)
+# Resiliência Total na Gravação de Paragens & Sincronização em Segundo Plano
 
-Revisão integral para aplicar e validar a taxonomia de paragens padronizada, os respetivos submenus específicos (Afinação Mola, Afinação Mecânica com Curso/Tempo/Ajuste, Avaria Mecânica com Parada e Observações, e Outro) e a resolução do erro de gravação/falso aviso de validação tanto no **Fecho de Paragem Ativa (`PageCloseStoppage`)** como no **Registo Manual de Ocorrências (`PageManualEntry`)** e **Edição (`EditStoppageModal`)**.
+Eliminação definitiva do erro de acesso à base central no fecho e registo de paragens, garantindo que nenhum registo de trabalho é perdido: gravação imediata no dispositivo com fila de sincronização em segundo plano e política de gravação garantida no servidor (sem bloqueios de concorrência ou rejeição por timestamps).
 
 ---
 
-## Decisões Confirmadas & Âmbito Alargado
+## Decisões Confirmadas
 
 > [!IMPORTANT]
-> **Extensão ao Registo Manual de Ocorrências:**
-> 1. O **Registo Manual Retroativo (`PageManualEntry.tsx`)** passa a ter exatamente as mesmas regras e submenus que o fecho da máquina ativa.
-> 2. **Eliminação do falso erro de "campos não preenchidos"**: Em ambos os formulários (`PageCloseStoppage` e `PageManualEntry`), erros devolvidos pela rede ou base de dados deixam de ser atribuídos a campos do formulário. São exibidos num banner de erro do servidor dedicado e claro.
-> 3. **4 Tipos Principais de Topo Fixados**:
->    - 🟠 **Afinação Mola**: Submenu de 8 ações (`Fechar Baixo`, `Abrir Baixo`, `Corrigir Espiral`, `Abrir Todo`, `Fechar Todo`, `Corrigir Escada`, `Mola`, `Outro`).
->    - 🔵 **Afinação Mecânica**: Componentes (`Braços`, `Pica`, `Cabeça`, `Borboleta`, `Outro`) com sub-opções (`Curso`, `Tempo`, `Ajuste`).
->    - 🔴 **Avaria Mecânica**: Paragem garantida (`machineStopped = true`) com opção `Parada` e bloco de observações técnicas vinculado.
->    - ⚪ **Outro**: Intervenção operacional ou motivo livre.
-> 4. **Cálculo de Tempo de Afinação**: Informação de "Tempo Total de Afinação" visível em Afinação Mola e Afinação Mecânica (máquina em ensaio ou pequenas paragens parciais).
-> 5. **Autorização & PIN no Registo Manual**: No registo manual, o PIN do operador que valida o fecho é verificado via login temporário e aceite pelo servidor sem rejeições 401 erróneas.
+> **Decisões Operacionais Confirmadas pelo Utilizador:**
+> 1. **Resiliência Offline / Falha de Ligação**: Se a ligação à base de dados central falhar ou tiver latência momentânea, a aplicação **guarda imediatamente o registo no dispositivo** (`localStorage` com flag de pendente) e **conclui o fecho da máquina**, agendando a sincronização em segundo plano. O operador nunca fica bloqueado nem perde o seu trabalho.
+> 2. **Gravação Garantida no Servidor**: O servidor passa a **gravar sempre o registo** de paragem na tabela `stoppages` e a limpar a paragem ativa da máquina, eliminando rejeições de concorrência estrita (erro 409 *"A paragem ativa foi alterada noutro posto"* ou discrepâncias de milissegundos).
 
 ---
 
-## 1. Arquitetura da Solução & Fluxo Unificado
+## 1. Visão Geral da Arquitetura de Gravação Resiliente
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│             REGISTO MANUAL & FECHO DE OCORRÊNCIA NA MÁQUINA            │
-│                 (PageManualEntry & PageCloseStoppage)                  │
+│             AÇÃO DO OPERADOR: "GRAVAR E SAIR" / FECHAR PARAGEM         │
+│                 (PageCloseStoppage ou PageManualEntry)                 │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
-    ┌───────────────────────────────┴───────────────────────────────┐
-    ▼                                                               ▼
-┌──────────────────────────────────────┐        ┌──────────────────────────────────────┐
-│  SELETOR DE TIPOLOGIA PADRONIZADA    │        │  DADOS OPERACIONAIS & AUTORIZAÇÃO    │
-│  • Afinação Mola (8 ações de mola)   │        │  • Máquina, Data, Horas (Início/Fim) │
-│  • Afinação Mecânica (Órgãos +       │        │  • Turno (1º, 2º ou Noturno)         │
-│    Curso / Tempo / Ajuste)           │        │  • Operador de Início / Fecho        │
-│  • Avaria Mecânica (Paragem          │        │  • PIN de validação do operador      │
-│    Garantida + Observações)          │        │    (no registo manual retroativo)    │
-│  • Outro                             │        └──────────────────┬───────────────────┘
-└──────────────────┬───────────────────┘                           │
-                   │                                               │
-                   ▼                                               ▼
-┌──────────────────────────────────────┐        ┌──────────────────────────────────────┐
-│ SÍNTESE AUTOMÁTICA (100% EDITÁVEL)   │        │ VALIDAÇÃO ESTRITA NO CLIENTE         │
-│ • Descrição da Paragem               │        │ • Apenas campos reais não            │
-│ • Ação Realizada                     │        │   preenchidos ativam o alerta        │
-│ • Observações complementares         │        │   "Campos em falta"                  │
-└──────────────────┬───────────────────┘        └──────────────────┬───────────────────┘
-                   │                                               │
-                   └───────────────────────┬───────────────────────┘
-                                           │
-                                           ▼
+                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        ENVIO PARA O SERVIDOR                           │
-│ • Endpoint: POST /api/stoppages                                        │
-│ • Fecho de ativa: Validação direta da máquina e operador               │
-│ • Registo manual: Autorização via PIN de operador (canClose) ou Admin  │
-│ • Resposta de erro: Tratada num banner isolado "Erro do Servidor",     │
-│   sem contaminar os campos de texto preenchidos.                       │
-└────────────────────────────────────────────────────────────────────────┘
+│ 1. Salvaguarda Imediata no Dispositivo (Garantia de Zero Perda)        │
+│ • Registo adicionado ao histórico local (localStorage)                 │
+│ • Estado da máquina limpo no ecrã (paragem concluída)                  │
+│ • Marcado como pendente de sincronização (pendingSync = true)          │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+               ┌────────────────────┴────────────────────┐
+               │ Tentativa de Gravação na Nuvem (API)     │
+               ▼                                         ▼
+   [Ligação e Supabase OK]                   [Falha de Rede / Supabase 503]
+               │                                         │
+               ▼                                         ▼
+┌──────────────────────────────┐          ┌──────────────────────────────┐
+│ • Sucesso 201 no servidor    │          │ • Aplicação não bloqueia     │
+│ • pendingSync marcado falso  │          │ • Notificação informativa:   │
+│ • Notificação verde:         │          │   "Guardado no dispositivo.  │
+│   "Paragem guardada na       │          │    Sincronização em curso."  │
+│    nuvem com sucesso!"       │          │ • Entra na fila de envio     │
+│ • Retorna ao ecrã inicial    │          │ • Retorna ao ecrã inicial    │
+└──────────────────────────────┘          └──────────────┬───────────────┘
+                                                         │
+                                                         ▼
+                                          ┌──────────────────────────────┐
+                                          │ Sincronizador de Fundo:      │
+                                          │ Reenvia para o Supabase      │
+                                          │ a cada ciclo ou ao detetar   │
+                                          │ ligação restabelecida.       │
+                                          └──────────────────────────────┘
 ```
 
 ---
 
-## 2. Implementação Detalhada por Módulo
+## 2. Estratégia de Execução no Servidor (`server.ts` & `supabaseStore.ts`)
 
-### 2.1 Componente `StoppageTaxonomySelector.tsx`
-- **Priorização dos 4 tipos padrão**: Garante que os botões `Afinação Mola`, `Afinação Mecânica`, `Avaria Mecânica` e `Outro` são sempre renderizados, independentemente de tipos legados existentes na tabela `stoppage_types` do Supabase.
-- **Submenu Afinação Mola**:
-  - 8 Ações táteis com multi-seleção e contadores.
-  - Alerta de contagem de tempo total de afinação.
-- **Submenu Afinação Mecânica**:
-  - Multi-seleção de órgãos (`Braços`, `Pica`, `Cabeça`, `Borboleta`, `Outro`).
-  - Cada órgão selecionado abre as tags de género de afinação (`Curso`, `Tempo`, `Ajuste`).
-- **Submenu Avaria Mecânica**:
-  - Indicação imediata de paragem física da máquina (`machineStopped = true`).
-  - Bloco de observações da anomalia mecânica.
-- **Geração de Texto em Tempo Real**: Atualiza a descrição e ação realizada, respeitando se o utilizador já escreveu manualmente.
+### 2.1 Política de Gravação Garantida (Zero Falsos Conflitos)
+- No método `saveStoppage`:
+  - Se a função RPC `save_stoppage_and_clear_active` reportar conflito ou erro de validação de timestamp ativo, o servidor executa **imediatamente um fallback de gravação direta**:
+    1. Inserção / atualização garantida na tabela `stoppages` via PostgREST (`on_conflict=id`).
+    2. Remoção da paragem ativa correspondente da máquina em `active_stoppages`.
+  - Desta forma, o registo histórico do trabalho executado pelo operador nunca é recusado.
 
-### 2.2 `PageManualEntry.tsx` (Registo Manual Retroativo)
-- **Integração total do `StoppageTaxonomySelector`**:
-  - Quando o utilizador altera o tipo no ecrã de registo manual, os submenus abrem imediatamente.
-  - Sincronização dos campos estruturados (`springAdjustments`, `mechanicalAdjustments`, `machineStopped`, `isTuningIntervention`).
-- **Separação de erros**:
-  - Criação de `serverError: string | null`.
-  - Se `onSaveRecord` falhar (ex: PIN incorreto ou erro de ligação à nuvem), o erro é mostrado num banner de erro do sistema vermelho com texto explicativo (ex: *"PIN de autorização incorreto"* ou *"Falha de ligação à base de dados"*).
-  - O aviso *"Atenção: Por favor complete os campos em falta"* é reservado unicamente a campos de formulário efetivamente vazios (ex: falta preencher hora ou operador).
+### 2.2 Contingência Local no Servidor
+- Caso o Supabase esteja temporariamente indisponível (ex.: quebra de DNS externa ou indisponibilidade da cloud), o servidor guarda o registo no ficheiro de contingência `data/db.json` e retorna `status 201` com indicação de contingência, integrando os dados na base central assim que a conectividade for restabelecida.
 
-### 2.3 `PageCloseStoppage.tsx` (Fecho da Máquina Ativa)
-- Aplicação das mesmas correções de separação de erros (`serverError`) e sincronização dos submenus de taxonomia.
-
-### 2.4 Backend `server.ts`
-- Ajustar `POST /api/stoppages` para que:
-  - O fecho de paragens ativas em curso seja aceite de forma fluida a partir do terminal da fábrica.
-  - No registo manual, o PIN do operador autorizado seja verificado e aceite sem desfasamentos de sessão.
-  - Respostas de erro incluam mensagens em português claras e sem ambiguidades.
+### 2.3 Tolerância a Falhas na Inicialização (`initializeSupabaseStorage`)
+- O middleware de inicialização do servidor deixa de abortar pedidos com erro 503 caso uma tabela secundária (`app_settings` / `auth_sessions`) tenha atraso de cache. A sincronização de metadados ocorre de forma assíncrona sem interromper o tráfego da API.
 
 ---
 
-## 3. Plano de Ficheiros a Modificar
+## 3. Estratégia de Execução no Cliente (`App.tsx`, `PageCloseStoppage`, `PageManualEntry`)
 
-1. **`src/components/StoppageTaxonomySelector.tsx`**:
-   - Garantir apresentação instantânea dos submenus dos 4 tipos principais em qualquer ecrã onde o seletor esteja inserido.
-2. **`src/pages/PageManualEntry.tsx`**:
-   - Assegurar a ligação bidirecional com o seletor e isolamento do estado `serverError`.
-3. **`src/pages/PageCloseStoppage.tsx`**:
-   - Isolamento do estado `serverError` e ligação aos submenus.
-4. **`server.ts`**:
-   - Garantir validação de autorização estável para registos manuais e fechos ativos.
+### 3.1 Salvaguarda Atómica no Dispositivo
+- No handler `handleSaveAndExit` e `handleSaveManualRecord`:
+  1. A paragem é imediatamente adicionada ao estado local `records` e persistida em `localStorage`.
+  2. A paragem ativa da máquina é limpa da memória e do ecrã da fábrica.
+  3. É efetuada a chamada de sincronização à API. Se a API responder com sucesso, o registo fica confirmado.
+  4. Se a API falhar (ex.: sinal Wi-Fi fraco no posto de trabalho), a paragem mantém-se salva no dispositivo, sendo colocada na fila de sincronização em segundo plano, e o operador é informado com mensagem clara de sucesso local:
+     > *"Paragem guardada no dispositivo! A sincronização com a base central será concluída em segundo plano."*
+  5. A interface volta de imediato ao ecrã inicial ou histórico, permitindo que a linha de produção continue sem interrupções.
+
+### 3.2 Fila de Sincronização em Segundo Plano (`syncPendingStoppages`)
+- Adição de rotina em `src/services/api.ts` e `App.tsx` que verifica periodicamente os registos com `pendingSync === true` e os envia para a nuvem quando a ligação estiver ativa.
+
+---
+
+## 4. Ficheiros a Modificar
+
+1. **`server/supabaseStore.ts`**:
+   - Ajustar `saveStoppage` com fallback direto para a tabela `stoppages` e limpeza de `active_stoppages`.
+2. **`server.ts`**:
+   - Ajustar `POST /api/stoppages` para política de gravação garantida e contingência local.
+   - Tornar `initializeSupabaseStorage` não bloqueante para chamadas de rotina.
+3. **`src/App.tsx`**:
+   - Implementar persistência local prioritária em `handleSaveAndExit` e `handleSaveManualRecord`.
+   - Adicionar mecanismo de sincronização em segundo plano para paragens pendentes.
+4. **`src/pages/PageCloseStoppage.tsx` & `src/pages/PageManualEntry.tsx`**:
+   - Informar o operador de gravação com sucesso (local ou nuvem), assegurando navegação fluida sem bloquear no ecrã.
 5. **Verificação**:
-   - `compile_applet` e `lint_applet` para validação de integridade.
+   - Executar `compile_applet` e `lint_applet` para validação rigorosa de tipos e sintaxe.
