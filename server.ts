@@ -11,6 +11,15 @@ import {
   sanitizeStoppageRecord,
   type SanitizedStoppage,
 } from './server/stoppageSanitizer';
+import {
+  canWriteStoppage,
+  matchesActiveStoppageClosure,
+} from './server/stoppageAuthorization';
+import {
+  canStartMachine,
+  getFactoryDate,
+  isValidMachineCode,
+} from './server/dailyMachinePlan';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -147,6 +156,9 @@ function publicOperators(operators: any[]) {
 }
 
 function respondWithStoreError(res: express.Response, error: unknown) {
+  if (error instanceof supabaseStore.StoreConflictError) {
+    return res.status(409).json({ error: error.message });
+  }
   console.error('Supabase persistence error:', error);
   return res.status(503).json({
     error: 'Não foi possível aceder à base de dados central. Verifique a ligação ao Supabase e tente novamente.',
@@ -310,48 +322,46 @@ let storageInitialization: Promise<void> | undefined;
 async function initializeSupabaseStorage(): Promise<void> {
   if (!storageInitialization) {
     storageInitialization = (async () => {
-      try {
-        const marker = await supabaseStore.getSetting<{ complete: boolean }>('legacy_import_v1').catch(() => null);
-        if (marker?.complete) return;
+      const marker = await supabaseStore.getSetting<{ complete: boolean }>('legacy_import_v1');
+      if (marker?.complete) return;
 
-        const legacy = loadLegacyDatabase();
-        const creds = await supabaseStore.getAdminCredentials().catch(() => null);
-        if (!validAdminCredentials(creds)) {
-          await supabaseStore.saveAdminCredentials(legacy.admin).catch(() => {});
-        }
-
-        const stoppageTypes = await supabaseStore.getStoppageTypes().catch(() => []);
-        if (!stoppageTypes.length) {
-          await supabaseStore.importStoppageTypes(DEFAULT_STOPPAGE_TYPES).catch(() => {});
-        } else {
-          const existingNames = new Set(stoppageTypes.map((t) => t.name.toLowerCase()));
-          const missingCore = DEFAULT_STOPPAGE_TYPES.filter(
-            (t) => !existingNames.has(t.name.toLowerCase())
-          );
-          if (missingCore.length > 0) {
-            await supabaseStore.importStoppageTypes(missingCore).catch((err) => {
-              console.warn('Could not upsert standard stoppage types to Supabase:', err);
-            });
-          }
-        }
-
-        const existingStoppages = await supabaseStore.getStoppages().catch(() => []);
-        if (!existingStoppages.length && legacy.stoppages.length) {
-          await supabaseStore.batchImportStoppages(legacy.stoppages, false).catch(() => {});
-        }
-        const existingActives = await supabaseStore.getActiveDowntimes().catch(() => []);
-        if (!existingActives.length && legacy.activeDowntimes.length) {
-          await supabaseStore.importActiveDowntimesIfAbsent(legacy.activeDowntimes).catch(() => {});
-        }
-
-        await supabaseStore.setSetting('legacy_import_v1', {
-          complete: true,
-          completedAt: Date.now(),
-        }).catch(() => {});
-      } catch (error) {
-        console.warn('Non-fatal storage initialization warning:', error);
+      const legacy = loadLegacyDatabase();
+      const creds = await supabaseStore.getAdminCredentials();
+      if (!validAdminCredentials(creds)) {
+        await supabaseStore.saveAdminCredentials(legacy.admin);
       }
-    })();
+
+      const stoppageTypes = await supabaseStore.getStoppageTypes();
+      if (!stoppageTypes.length) {
+        await supabaseStore.importStoppageTypes(DEFAULT_STOPPAGE_TYPES);
+      } else {
+        const existingNames = new Set(stoppageTypes.map((t) => t.name.toLowerCase()));
+        const missingCore = DEFAULT_STOPPAGE_TYPES.filter(
+          (t) => !existingNames.has(t.name.toLowerCase())
+        );
+        if (missingCore.length > 0) {
+          await supabaseStore.importStoppageTypes(missingCore);
+        }
+      }
+
+      const existingStoppages = await supabaseStore.getStoppages();
+      if (!existingStoppages.length && legacy.stoppages.length) {
+        await supabaseStore.batchImportStoppages(legacy.stoppages, false);
+      }
+      const existingActives = await supabaseStore.getActiveDowntimes();
+      if (!existingActives.length && legacy.activeDowntimes.length) {
+        await supabaseStore.importActiveDowntimesIfAbsent(legacy.activeDowntimes);
+      }
+
+      await supabaseStore.setSetting('legacy_import_v1', {
+        complete: true,
+        completedAt: Date.now(),
+      });
+    })().catch((error) => {
+      storageInitialization = undefined;
+      console.warn('Supabase storage initialization failed; it will be retried.', error);
+      throw error;
+    });
   }
   await storageInitialization;
 }
@@ -416,10 +426,9 @@ function requireSession(req: express.Request, res: express.Response, next: expre
 }
 
 app.use('/api', (req, res, next) => {
-  void initializeSupabaseStorage().catch((error) => {
-    console.warn('Supabase storage background initialization warning:', error);
-  });
-  next();
+  void initializeSupabaseStorage()
+    .then(() => next())
+    .catch((error) => respondWithStoreError(res, error));
 });
 // REST API ROUTES
 
@@ -628,12 +637,14 @@ app.post('/api/operators/logout', async (req, res) => {
 // 2. Complete application state shared by every workstation. Requires an authenticated session.
 app.get('/api/state', requireSession, async (_req, res) => {
   try {
-    const [operators, stoppageTypes, activeDowntimes, stoppages, stoppageTemplates] = await Promise.all([
+    const planDate = getFactoryDate();
+    const [operators, stoppageTypes, activeDowntimes, stoppages, stoppageTemplates, plannedMachineIds] = await Promise.all([
       supabaseStore.getOperators(),
       supabaseStore.getStoppageTypes(),
       supabaseStore.getActiveDowntimes(),
       supabaseStore.getStoppages(),
       supabaseStore.getStoppageTemplates(),
+      supabaseStore.getDailyMachinePlan(planDate),
     ]);
     res.json({
       operators: publicOperators(operators),
@@ -641,9 +652,26 @@ app.get('/api/state', requireSession, async (_req, res) => {
       activeDowntimes,
       stoppages,
       stoppageTemplates,
+      dailyMachinePlan: { date: planDate, machineIds: plannedMachineIds },
       serverTime: Date.now(),
       updatedAt: Date.now(),
     });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.put('/api/daily-machine-plan/:machineId', requireSession, async (req, res) => {
+  const machineId = req.params.machineId.trim().toUpperCase();
+  const { planned } = req.body || {};
+  if (!isValidMachineCode(machineId) || typeof planned !== 'boolean') {
+    return res.status(400).json({ error: 'Dados inválidos para atualizar o plano diário de máquinas.' });
+  }
+
+  try {
+    const planDate = getFactoryDate();
+    await supabaseStore.setDailyMachinePlanned(planDate, machineId, planned);
+    res.json({ date: planDate, machineId, planned });
   } catch (error) {
     return respondWithStoreError(res, error);
   }
@@ -687,6 +715,14 @@ app.post('/api/active-stoppages', async (req, res) => {
       return res.status(session ? 403 : 401).json({
         error: existing ? 'É necessária a permissão para atualizar paragens.' : 'É necessária a permissão para iniciar paragens.',
       });
+    }
+    if (!existing) {
+      const plannedMachineIds = await supabaseStore.getDailyMachinePlan(getFactoryDate());
+      if (!canStartMachine(machineId, plannedMachineIds, false)) {
+        return res.status(403).json({
+          error: 'Esta máquina não está incluída no plano de produção de hoje. Atualize o plano antes de iniciar uma paragem.',
+        });
+      }
     }
     if (!existing && session?.role === 'operator') {
       const operator = await supabaseStore.getOperator(session.operatorId || '');
@@ -773,34 +809,57 @@ app.post('/api/stoppages', async (req, res) => {
   }
 
   try {
-    const activeDowntime = await supabaseStore.getActiveDowntime(machineId).catch(() => null);
-    const incomingStart = Number(incoming.startTimestamp) || 0;
-    const activeStart = Number(activeDowntime?.startTimestamp) || 0;
-    const isClosingActiveDowntime =
-      Boolean(activeDowntime) &&
-      (Math.abs(activeStart - incomingStart) < 60000 || incoming.id.startsWith('stop-'));
-    const isStationClosure = incoming.id.startsWith('stop-') || isClosingActiveDowntime;
+    const session = await getSession(req);
+    const isStationClosure = incoming.id.startsWith('stop-');
+    const pinHeader = req.headers['x-operator-pin'] || req.headers['x-deletion-pin'];
+    const pinBody = req.body?.pin;
+    const providedPin = (pinHeader || pinBody || '').toString().trim();
+    const writeThrottleKeys = [`stoppage-write:ip:${req.ip || 'unknown'}`, 'stoppage-write:global'];
 
-    // Se for registo manual retroativo (não fecho de máquina ativa), validar sessão ou PIN
-    if (!isStationClosure) {
-      const session = await getSession(req);
-      const isSessionAuthorized =
-        session?.role === 'admin' || (session?.role === 'operator' && session.canClose);
-
-      let isPinAuthorized = false;
-      const pinHeader = req.headers['x-operator-pin'] || req.headers['x-deletion-pin'];
-      const pinBody = req.body?.pin;
-      const providedPin = (pinHeader || pinBody || '').toString().trim();
-
-      if (!isSessionAuthorized && providedPin) {
-        isPinAuthorized = await verifyAuthorizationPin(providedPin);
+    let isPinAuthorized = false;
+    if (!canWriteStoppage(session, false) && providedPin) {
+      const lockedUntil = await loginThrottle.getLockedUntil(writeThrottleKeys);
+      if (lockedUntil > Date.now()) {
+        return rejectLocked(res, lockedUntil);
       }
-
-      if (!isSessionAuthorized && !isPinAuthorized) {
-        return res.status(401).json({
-          error: 'É necessário um PIN de operador autorizado ou sessão ativa para registar uma paragem manual.',
-        });
+      isPinAuthorized = await verifyAuthorizationPin(
+        providedPin,
+        isStationClosure ? incoming.closedBy : undefined
+      );
+      if (!isPinAuthorized) {
+        const locked = await loginThrottle.registerFailure([
+          { key: writeThrottleKeys[0], limit: DELETE_PIN_LIMIT_PER_IP },
+          { key: writeThrottleKeys[1], limit: DELETE_PIN_LIMIT_GLOBAL },
+        ]);
+        if (locked > Date.now()) {
+          return rejectLocked(res, locked);
+        }
+      } else {
+        await loginThrottle.clearFailures(writeThrottleKeys);
       }
+    }
+
+    if (!canWriteStoppage(session, isPinAuthorized)) {
+      return res.status(session ? 403 : 401).json({
+        error: isStationClosure
+          ? 'Introduza o PIN do operador selecionado com permissão de fecho ou use uma sessão autorizada.'
+          : 'É necessário um PIN de operador autorizado ou sessão ativa para registar uma paragem manual.',
+      });
+    }
+
+    const activeDowntime = await supabaseStore.getActiveDowntime(machineId);
+    const activeStartTimestamp =
+      typeof activeDowntime?.startTimestamp === 'number' ? activeDowntime.startTimestamp : undefined;
+    const isClosingActiveDowntime = Boolean(
+      activeDowntime &&
+        matchesActiveStoppageClosure(
+          incoming.id,
+          incoming.startTimestamp,
+          activeStartTimestamp
+        )
+    );
+    if (isStationClosure && !isClosingActiveDowntime) {
+      return res.status(409).json({ error: 'A paragem ativa já foi alterada noutro posto.' });
     }
 
     // Só os campos conhecidos são guardados (ver server/stoppageSanitizer.ts).
@@ -813,36 +872,14 @@ app.post('/api/stoppages', async (req, res) => {
       shift: sanitized.record.shift || computeShift(incoming.startTimestamp, incoming.startTime),
     };
 
-    let savedData: Record<string, unknown> = record;
-    try {
-      const result = await supabaseStore.saveStoppage(record, Boolean(isClosingActiveDowntime));
-      savedData = (result?.data as Record<string, unknown>) || record;
-    } catch (saveError) {
-      console.warn('Erro ao guardar no Supabase, a persistir na contingência do servidor:', saveError);
-      try {
-        const legacy = loadLegacyDatabase();
-        const updatedList = [record, ...legacy.stoppages.filter((s: any) => s.id !== record.id)];
-        const updatedActives = legacy.activeDowntimes.filter(
-          (d: any) => d.machineId !== record.machineId
-        );
-        saveLegacyDatabase({
-          ...legacy,
-          stoppages: updatedList,
-          activeDowntimes: updatedActives,
-          updatedAt: Date.now(),
-        });
-      } catch (contingencyErr) {
-        console.error('Contingency storage error:', contingencyErr);
-      }
-    }
-
-    res.status(201).json(savedData);
+    const result = await supabaseStore.saveStoppage(record, isClosingActiveDowntime);
+    res.status(201).json(result.data || record);
   } catch (error) {
     return respondWithStoreError(res, error);
   }
 });
 
-async function verifyAuthorizationPin(providedPin: string): Promise<boolean> {
+async function verifyAuthorizationPin(providedPin: string, expectedOperatorName?: string): Promise<boolean> {
   if (!providedPin || typeof providedPin !== 'string') return false;
   const pin = providedPin.trim();
   if (pin.length < 4 || pin.length > 256) return false;
@@ -856,6 +893,8 @@ async function verifyAuthorizationPin(providedPin: string): Promise<boolean> {
         (operator) =>
           operator.active &&
           operator.canClose &&
+          (!expectedOperatorName ||
+            operator.name.trim().toLowerCase() === expectedOperatorName.trim().toLowerCase()) &&
           operator.pinSalt &&
           operator.pinHash &&
           verifySecret(pin, operator.pinSalt, operator.pinHash)
@@ -864,6 +903,8 @@ async function verifyAuthorizationPin(providedPin: string): Promise<boolean> {
   } catch (err) {
     console.error('Error fetching operators for PIN verification:', err);
   }
+
+  if (expectedOperatorName) return false;
 
   // 2. Check Admin credentials
   try {

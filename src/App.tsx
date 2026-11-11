@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import {
   AppPage,
   Machine,
@@ -15,6 +15,7 @@ import {
   StoppageStageLevel,
   StoppageTemplate,
 } from './types/manutrack';
+import type { DailyMachinePlan } from './services/api';
 import {
   MACHINES_DATA,
   INITIAL_STOPPAGE_TYPES,
@@ -25,9 +26,13 @@ import { formatTimeOnly, formatDatePt } from './utils/formatters';
 import { playIndustrialClick, playSuccessChime } from './utils/audio';
 import { getShiftInfo } from './utils/shift';
 import {
+  enqueuePendingStoppage,
+  readPendingStoppages,
+  removePendingStoppage,
+} from './utils/offlineOutbox';
+import {
   fetchSharedState,
   apiStartActiveDowntime,
-  apiCancelActiveDowntime,
   apiSaveStoppage,
   apiUpdateStoppage,
   apiDeleteStoppage,
@@ -47,6 +52,7 @@ import {
   apiAdminLogin,
   apiAdminLogout,
   apiOperatorLogout,
+  apiSetDailyMachinePlanned,
   ApiError,
   hasStoredSession,
   clearAdminToken,
@@ -54,15 +60,25 @@ import {
 } from './services/api';
 
 
-import { PageHome } from './pages/PageHome';
-import { PageSelectMachine } from './pages/PageSelectMachine';
-import { PageTimer } from './pages/PageTimer';
-import { PageCloseStoppage } from './pages/PageCloseStoppage';
-import { PageHistory } from './pages/PageHistory';
-import { PageDashboard } from './pages/PageDashboard';
-import { PageAdmin } from './pages/PageAdmin';
-import { PageActiveMonitoring } from './pages/PageActiveMonitoring';
-import { PageManualEntry } from './pages/PageManualEntry';
+const PageHome = lazy(() => import('./pages/PageHome').then((module) => ({ default: module.PageHome })));
+const PageSelectMachine = lazy(() =>
+  import('./pages/PageSelectMachine').then((module) => ({ default: module.PageSelectMachine }))
+);
+const PageTimer = lazy(() => import('./pages/PageTimer').then((module) => ({ default: module.PageTimer })));
+const PageCloseStoppage = lazy(() =>
+  import('./pages/PageCloseStoppage').then((module) => ({ default: module.PageCloseStoppage }))
+);
+const PageHistory = lazy(() => import('./pages/PageHistory').then((module) => ({ default: module.PageHistory })));
+const PageDashboard = lazy(() =>
+  import('./pages/PageDashboard').then((module) => ({ default: module.PageDashboard }))
+);
+const PageAdmin = lazy(() => import('./pages/PageAdmin').then((module) => ({ default: module.PageAdmin })));
+const PageActiveMonitoring = lazy(() =>
+  import('./pages/PageActiveMonitoring').then((module) => ({ default: module.PageActiveMonitoring }))
+);
+const PageManualEntry = lazy(() =>
+  import('./pages/PageManualEntry').then((module) => ({ default: module.PageManualEntry }))
+);
 import { ShareModal } from './components/ShareModal';
 import { AppLoginGate } from './components/AppLoginGate';
 import { Smartphone, Monitor, CheckCircle, Server, Settings2, QrCode, Cloud, RefreshCw, Activity, Layers, Wrench, LogOut } from 'lucide-react';
@@ -73,6 +89,10 @@ export default function App() {
 
   // Backend state: Operators and Stoppage Types
   const [operators, setOperators] = useState<Operator[]>([]);
+  const [dailyMachinePlan, setDailyMachinePlan] = useState<DailyMachinePlan>({
+    date: '',
+    machineIds: [],
+  });
 
   const [stoppageTypes, setStoppageTypes] = useState<StoppageTypeItem[]>(() => {
     try {
@@ -99,7 +119,9 @@ export default function App() {
   const [isBootstrapping, setIsBootstrapping] = useState<boolean>(() => hasStoredSession());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const cloudStateVersionRef = useRef(0);
+  const dailyMachinePlanVersionRef = useRef(0);
   const isSavingStoppageRef = useRef(false);
+  const isSyncInProgressRef = useRef(false);
 
   // Persistence: Active running downtimes
   const [activeDowntimes, setActiveDowntimes] = useState<ActiveDowntime[]>(() => {
@@ -121,15 +143,27 @@ export default function App() {
   // Persistence: Stoppage records history (Cleaned of any mock seed records)
   const [records, setRecords] = useState<StoppageRecord[]>(() => {
     try {
+      let pending = readPendingStoppages();
       const saved = localStorage.getItem('manutrack_stoppages_history');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed.filter((r) => r && r.id && !r.id.startsWith('seed-'));
+          const history = parsed.filter((r) => r && r.id && !r.id.startsWith('seed-'));
+          const queuedIds = new Set(pending.map((record) => record.id));
+          history
+            .filter((record) => record.pendingSync === true && !queuedIds.has(record.id))
+            .forEach((record) => {
+              pending = enqueuePendingStoppage(record);
+            });
+          return [
+            ...pending,
+            ...history.filter((record) => !pending.some((item) => item.id === record.id)),
+          ];
         }
       }
+      if (pending.length > 0) return pending;
     } catch {
-      // Ignore parse errors
+      console.warn('Não foi possível recuperar o histórico local de paragens.');
     }
     return INITIAL_STOPPAGES_SEED;
   });
@@ -147,14 +181,28 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const clearSensitiveState = () => {
+    let pending: StoppageRecord[] = [];
+    let pendingReadable = true;
+    try {
+      pending = readPendingStoppages();
+    } catch (error) {
+      pendingReadable = false;
+      console.warn('Não foi possível ler a fila local de paragens antes de limpar a sessão.', error);
+    }
     setOperators([]);
+    setDailyMachinePlan({ date: '', machineIds: [] });
     setActiveDowntimes([]);
-    setRecords([]);
+    setRecords(pending);
     setFocusedDowntime(null);
     setStopEndTimestamp(0);
     setCurrentOperator('');
     try {
-      localStorage.removeItem('manutrack_stoppages_history');
+      if (pendingReadable) {
+        localStorage.removeItem('manutrack_stoppages_history');
+        if (pending.length > 0) {
+          localStorage.setItem('manutrack_stoppages_history', JSON.stringify(pending));
+        }
+      }
       localStorage.removeItem('manutrack_active_downtimes');
       localStorage.removeItem('manutrack_operators_cache');
     } catch {
@@ -164,14 +212,20 @@ export default function App() {
 
   // Periodic Cloud Sync Function with Bidirectional Resilience (Keep all devices aligned & never wipe data)
   const syncWithCloud = async () => {
-    if (isSavingStoppageRef.current) return;
+    if (isSavingStoppageRef.current || isSyncInProgressRef.current) return;
+    isSyncInProgressRef.current = true;
     const syncVersion = cloudStateVersionRef.current;
+    const dailyPlanVersion = dailyMachinePlanVersionRef.current;
 
     try {
       setIsSyncing(true);
       const state = await fetchSharedState();
       if (isSavingStoppageRef.current || syncVersion !== cloudStateVersionRef.current) return;
       setIsBackendConnected(true);
+
+      if (dailyPlanVersion === dailyMachinePlanVersionRef.current) {
+        setDailyMachinePlan(state.dailyMachinePlan);
+      }
 
       // 1. Sync Operators with local merge (only trigger re-render if actually changed)
       if (Array.isArray(state.operators)) {
@@ -222,9 +276,12 @@ export default function App() {
         );
 
         // Identificar registos locais pendentes que ainda não estejam na nuvem
-        const localPending = records.filter(
-          (r) => r.pendingSync && !cleanServerStoppages.some((s: any) => s.id === r.id)
-        );
+        const serverIds = new Set(cleanServerStoppages.map((record: StoppageRecord) => record.id));
+        const pendingRecords = readPendingStoppages();
+        pendingRecords
+          .filter((record) => serverIds.has(record.id))
+          .forEach((record) => removePendingStoppage(record.id));
+        const localPending = pendingRecords.filter((record) => !serverIds.has(record.id));
 
         const mergedRecords = [...localPending, ...cleanServerStoppages].sort(
           (a, b) => (b.startTimestamp || b.createdAt || 0) - (a.startTimestamp || a.createdAt || 0)
@@ -237,8 +294,15 @@ export default function App() {
         if (localPending.length > 0) {
           for (const pending of localPending) {
             try {
-              await apiSaveStoppage(pending);
-              pending.pendingSync = false;
+              const saved = await apiSaveStoppage(pending);
+              removePendingStoppage(pending.id);
+              setRecords((prev) => {
+                const next = prev.map((record) =>
+                  record.id === pending.id ? { ...saved, pendingSync: false } : record
+                );
+                localStorage.setItem('manutrack_stoppages_history', JSON.stringify(next));
+                return next;
+              });
             } catch (syncErr) {
               console.warn('Sincronização em segundo plano adiada para', pending.id, syncErr);
             }
@@ -254,6 +318,7 @@ export default function App() {
         setRequiresLogin(true);
       }
     } finally {
+      isSyncInProgressRef.current = false;
       setIsSyncing(false);
       setIsBootstrapping(false);
     }
@@ -407,7 +472,19 @@ export default function App() {
     setCurrentPage('select_machine');
   };
 
-  // Page 2: Machine clicked -> immediately start downtime timer in cloud & go to Page 3
+  const handleSetDailyMachinePlanned = async (machine: Machine, planned: boolean) => {
+    const result = await apiSetDailyMachinePlanned(machine.code, planned);
+    dailyMachinePlanVersionRef.current += 1;
+    setDailyMachinePlan((current) => {
+      const currentIds = result.date === current.date ? current.machineIds : [];
+      const machineIds = new Set(currentIds);
+      if (result.planned) machineIds.add(result.machineId);
+      else machineIds.delete(result.machineId);
+      return { date: result.date, machineIds: [...machineIds].sort() };
+    });
+  };
+
+  // Page 2: A planned machine starts its downtime timer in the cloud & opens Page 3
   const handleSelectMachine = async (
     machine: Machine,
     operator: string,
@@ -492,14 +569,20 @@ export default function App() {
   };
 
   // Page 4: "Gravar e sair" clicked -> save record to cloud database & clear machine status
-  const handleSaveAndExit = async (newRecord: StoppageRecord) => {
+  const handleSaveAndExit = async (newRecord: StoppageRecord, authorizationPin?: string) => {
     isSavingStoppageRef.current = true;
     cloudStateVersionRef.current += 1;
 
     // 1. Salvaguarda imediata no dispositivo com pendingSync (o registo NUNCA se perde)
     const cleanMachineId = newRecord.machineId.trim().toUpperCase();
     const pendingRecord: StoppageRecord = { ...newRecord, pendingSync: true };
-    const localRecords = [pendingRecord, ...records.filter((record) => record.id !== newRecord.id)];
+    const pendingRecords = enqueuePendingStoppage(pendingRecord);
+    const localRecords = [
+      ...pendingRecords,
+      ...records.filter((record) =>
+        record.id !== newRecord.id && !pendingRecords.some((pending) => pending.id === record.id)
+      ),
+    ];
     const remainingActive = activeDowntimes.filter(
       (downtime) => downtime.machineId.trim().toUpperCase() !== cleanMachineId
     );
@@ -513,8 +596,8 @@ export default function App() {
 
     // 2. Tentar gravação na nuvem central
     try {
-      await apiSaveStoppage(newRecord);
-      await apiCancelActiveDowntime(newRecord.machineId).catch(() => {});
+      await apiSaveStoppage(newRecord, true, authorizationPin);
+      removePendingStoppage(newRecord.id);
 
       const syncedRecord: StoppageRecord = { ...newRecord, pendingSync: false };
       const syncedList = [syncedRecord, ...records.filter((record) => record.id !== newRecord.id)];
@@ -586,7 +669,13 @@ export default function App() {
 
     // 1. Salvaguarda imediata no dispositivo com pendingSync
     const pendingRecord: StoppageRecord = { ...newRecord, pendingSync: true };
-    const localRecords = [pendingRecord, ...records.filter((record) => record.id !== newRecord.id)];
+    const pendingRecords = enqueuePendingStoppage(pendingRecord);
+    const localRecords = [
+      ...pendingRecords,
+      ...records.filter((record) =>
+        record.id !== newRecord.id && !pendingRecords.some((pending) => pending.id === record.id)
+      ),
+    ];
     setRecords(localRecords);
     localStorage.setItem('manutrack_stoppages_history', JSON.stringify(localRecords));
 
@@ -598,6 +687,7 @@ export default function App() {
         console.warn('Operator session login warning, proceeding with direct PIN verification:', loginErr);
       }
       await apiSaveStoppage(newRecord, true, pin);
+      removePendingStoppage(newRecord.id);
 
       const syncedRecord: StoppageRecord = { ...newRecord, pendingSync: false };
       const syncedList = [syncedRecord, ...records.filter((record) => record.id !== newRecord.id)];
@@ -853,6 +943,13 @@ export default function App() {
           </div>
         )}
 
+        <Suspense
+          fallback={
+            <div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-400">
+              A carregar...
+            </div>
+          }
+        >
         {/* SCREEN 1: Página 1 (Início - Logotipo, Iniciar Paragem, Sair) */}
         {currentPage === 'home' && (
           <PageHome
@@ -881,6 +978,8 @@ export default function App() {
             onSetOperator={setCurrentOperator}
             availableOperators={operators}
             onOpenAdmin={() => setCurrentPage('admin')}
+            dailyMachinePlan={dailyMachinePlan}
+            onSetDailyMachinePlanned={handleSetDailyMachinePlanned}
           />
         )}
 
@@ -1017,7 +1116,7 @@ export default function App() {
             onBackToHome={() => setCurrentPage('home')}
           />
         )}
-
+        </Suspense>
       </main>
 
       {/* QR Code and Mobile Share Modal */}

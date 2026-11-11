@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, LogOut, ArrowLeft, Clock, AlertCircle } from 'lucide-react';
+import { User, LogOut, ArrowLeft, Clock, AlertCircle, Lock } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
 import { Machine, ActiveDowntime, Operator } from '../types/manutrack';
 import { MACHINES_DATA } from '../data/initialData';
@@ -15,6 +15,8 @@ interface PageSelectMachineProps {
   onSetOperator: (name: string) => void;
   availableOperators?: Operator[];
   onOpenAdmin?: () => void;
+  dailyMachinePlan: { date: string; machineIds: string[] };
+  onSetDailyMachinePlanned: (machine: Machine, planned: boolean) => Promise<void>;
 }
 
 export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
@@ -26,11 +28,16 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
   onSetOperator,
   availableOperators = [],
   onOpenAdmin,
+  dailyMachinePlan,
+  onSetDailyMachinePlanned,
 }) => {
   const [selectedOperatorId, setSelectedOperatorId] = useState('');
   const [operatorPin, setOperatorPin] = useState('');
   const [isStarting, setIsStarting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [isEditingPlan, setIsEditingPlan] = useState(false);
+  const [isUpdatingPlan, setIsUpdatingPlan] = useState(false);
+  const [planUpdateError, setPlanUpdateError] = useState<string | null>(null);
 
   // Automatically calculated industrial shift based on current time:
   // 05:00 - 14:30 -> 1º Turno | 14:30 - 00:00 -> 2º Turno | 00:00 - 05:00 -> Turno Noturno
@@ -46,9 +53,24 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
   const handleMachineClick = async (machine: Machine) => {
     playIndustrialClick();
     const existing = activeMap.get(machine.code);
+    const isPlanned = dailyMachinePlan.machineIds.includes(machine.code);
+    if (isEditingPlan) {
+      setIsUpdatingPlan(true);
+      setPlanUpdateError(null);
+      try {
+        await onSetDailyMachinePlanned(machine, !isPlanned);
+      } catch (error) {
+        setPlanUpdateError(error instanceof Error ? error.message : 'Não foi possível atualizar o plano diário.');
+      } finally {
+        setIsUpdatingPlan(false);
+      }
+      return;
+    }
     if (existing) {
       // Machine already has an active downtime running -> allow inspecting timer
       onOpenActiveTimer(existing);
+    } else if (!isPlanned) {
+      return;
     } else {
       // Starting a new stoppage -> operator MUST be selected
       if (!currentOperator || !currentOperator.trim()) {
@@ -182,18 +204,39 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
             </div>
         </div>
 
-        {/* Instructions banner */}
-        <div className="mt-3 flex items-center justify-between text-xs px-1 text-slate-400">
-          <span>Selecione a máquina (F01–F30):</span>
-          <div className="flex items-center gap-3 text-[11px]">
-            <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-slate-500 inline-block"></span>
-              Disponível
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-rose-500 inline-block"></span>
-              Parada
-            </span>
+        <div className="mt-3 rounded-xl border border-slate-700/80 bg-slate-900/90 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                Plano diário {dailyMachinePlan.date ? `· ${dailyMachinePlan.date.split('-').reverse().join('/')}` : ''}
+              </p>
+              <p className="mt-0.5 text-[10px] text-slate-400">
+                {isEditingPlan ? 'Toque nas máquinas para incluir ou retirar do plano.' : 'Máquinas bloqueadas não podem iniciar paragens.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setIsEditingPlan((editing) => !editing);
+                setPlanUpdateError(null);
+              }}
+              disabled={isUpdatingPlan}
+              className={`shrink-0 rounded-lg border px-3 py-2 text-[10px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                isEditingPlan
+                  ? 'border-emerald-500/60 bg-emerald-950/50 text-emerald-300 hover:bg-emerald-900/50'
+                  : 'border-slate-600 bg-slate-800 text-slate-200 hover:border-amber-500 hover:text-amber-300'
+              }`}
+            >
+              {isEditingPlan ? 'Concluir edição' : 'Editar plano do dia'}
+            </button>
+          </div>
+          {planUpdateError && (
+            <p className="mt-2 text-[11px] font-semibold text-rose-400" role="alert">{planUpdateError}</p>
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-400">
+            <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Planeada</span>
+            <span className="flex items-center gap-1"><Lock className="h-3 w-3 text-rose-400" /> Fora do plano</span>
+            <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-rose-500" /> Parada</span>
           </div>
         </div>
       </div>
@@ -204,19 +247,34 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
           {MACHINES_DATA.map((machine) => {
             const active = activeMap.get(machine.code);
             const isStopped = !!active;
+            const isPlanned = dailyMachinePlan.machineIds.includes(machine.code);
+            const isLocked = !isPlanned;
+            const isDisabled = isStarting || (isUpdatingPlan && isEditingPlan) || (!isEditingPlan && isLocked && !isStopped);
+            const planColor = isPlanned
+              ? 'border-emerald-500 bg-emerald-950/50 text-white hover:bg-emerald-900/60'
+              : 'border-rose-500/70 bg-rose-950/40 text-rose-200 hover:bg-rose-900/50';
 
             return (
               <button
                 key={machine.code}
                 type="button"
                 onClick={() => handleMachineClick(machine)}
-                disabled={isStarting}
-                className={`relative flex min-h-[58px] sm:min-h-[64px] flex-col items-center justify-center rounded-xl border-2 p-1.5 transition-all active:scale-[0.95] ${
-                  isStopped
-                    ? 'border-rose-500 bg-rose-950/60 text-white shadow-md shadow-rose-950/40 ring-1 ring-rose-500'
-                    : 'border-slate-700 bg-slate-900/90 text-slate-100 hover:border-amber-500 hover:bg-slate-800 shadow-sm'
+                disabled={isDisabled}
+                aria-label={`${machine.code}, ${isStopped ? 'parada ativa' : isPlanned ? 'planeada' : 'bloqueada'}`}
+                title={!isEditingPlan && isLocked && !isStopped ? 'Inclua no plano diário para iniciar uma paragem' : undefined}
+                className={`relative flex min-h-[58px] sm:min-h-[64px] flex-col items-center justify-center rounded-xl border-2 p-1.5 transition-all active:scale-[0.95] disabled:cursor-not-allowed disabled:opacity-80 ${
+                  isEditingPlan
+                    ? planColor
+                    : isStopped
+                      ? 'border-rose-500 bg-rose-950/60 text-white shadow-md shadow-rose-950/40 ring-1 ring-rose-500'
+                      : isPlanned
+                        ? 'border-emerald-500 bg-emerald-950/50 text-white hover:border-emerald-400 hover:bg-emerald-900/60 shadow-sm'
+                        : 'border-rose-500/70 bg-rose-950/40 text-rose-200 shadow-sm'
                 }`}
               >
+                {isLocked && (
+                  <Lock className="absolute -left-1 -top-1 h-4 w-4 rounded-full bg-slate-950 p-0.5 text-rose-400" />
+                )}
                 {/* Active Indicator if machine has ongoing downtime */}
                 {isStopped && (
                   <span className="absolute -top-1.5 -right-1 flex h-3 w-3">
@@ -231,10 +289,10 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
 
                 <span
                   className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-tight mt-0.5 ${
-                    isStopped ? 'text-rose-300' : 'text-slate-400'
+                    isStopped ? 'text-rose-300' : isPlanned ? 'text-emerald-300' : 'text-rose-300'
                   }`}
                 >
-                  {isStopped ? 'Parada' : 'Livre'}
+                  {isStopped ? 'Parada' : isPlanned ? 'Planeada' : 'Bloqueada'}
                 </span>
               </button>
             );

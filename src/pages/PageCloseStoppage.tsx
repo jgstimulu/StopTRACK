@@ -49,7 +49,7 @@ import {
 interface PageCloseStoppageProps {
   activeDowntime: ActiveDowntime;
   endTimestamp: number;
-  onSaveAndExit: (record: StoppageRecord) => Promise<void>;
+  onSaveAndExit: (record: StoppageRecord, authorizationPin?: string) => Promise<void>;
   onCancel: () => void;
   operators?: string[];
   availableOperators?: Operator[];
@@ -106,6 +106,7 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
   const [initiatedBy, setInitiatedBy] = useState<string>(activeDowntime.initiatedBy || '');
   // The selected closer is recorded for information only; closing does not require a PIN.
   const [closedBy, setClosedBy] = useState<string>('');
+  const [authorizationPin, setAuthorizationPin] = useState('');
 
   const [isCustomInitiator, setIsCustomInitiator] = useState<boolean>(
     Boolean(initiatedBy && !activeOps.some((o) => o.name === initiatedBy))
@@ -343,7 +344,7 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
     setIsSaving(true);
     setServerError(null);
     try {
-      await onSaveAndExit(record);
+      await onSaveAndExit(record, authorizationPin.trim() || undefined);
       playSuccessChime();
     } catch (error) {
       setServerError(error instanceof Error ? error.message : 'Não foi possível guardar a paragem na nuvem.');
@@ -586,6 +587,21 @@ export const PageCloseStoppage: React.FC<PageCloseStoppageProps> = ({
               {errors.closedBy}
             </p>
           )}
+          <label className="mt-3 block text-[11px] font-semibold text-slate-400" htmlFor="closure-authorization-pin">
+            PIN do responsável pelo fecho (necessário se a sessão atual não tiver permissão)
+          </label>
+          <input
+            id="closure-authorization-pin"
+            type="password"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            maxLength={8}
+            autoComplete="off"
+            value={authorizationPin}
+            onChange={(event) => setAuthorizationPin(event.target.value)}
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs font-mono text-white focus:border-amber-500 focus:outline-none"
+            placeholder="PIN do operador selecionado"
+          />
         </div>
 
         {/* 3. Submenu e Taxonomia Padronizada (Afinação Mola, Afinação Mecânica, Avaria Mecânica, Outro) */}
