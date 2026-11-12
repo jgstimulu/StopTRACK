@@ -75,7 +75,9 @@ const PageCloseStoppage = lazy(() =>
 );
 const PageHistory = lazy(() => import('./pages/PageHistory').then((module) => ({ default: module.PageHistory })));
 const PageDashboard = lazy(() =>
-  import('./pages/PageDashboard').then((module) => ({ default: module.PageDashboard }))
+  import('./pages/PageInterventionAnalysis').then((module) => ({
+    default: module.PageInterventionAnalysis,
+  }))
 );
 const PageAdmin = lazy(() => import('./pages/PageAdmin').then((module) => ({ default: module.PageAdmin })));
 const PageActiveMonitoring = lazy(() =>
@@ -1321,6 +1323,7 @@ export default function App() {
             {currentPage === 'dashboard' && (
               <PageDashboard
                 records={records}
+                activeDowntimes={activeDowntimes}
                 onBackToHome={() => setCurrentPage('home')}
               />
             )}

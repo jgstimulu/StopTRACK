@@ -27,7 +27,6 @@ import { STOPPAGE_TYPES } from '../data/initialData';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
 import {
   exportStoppageRecordsCSV,
-  exportOeeKpiCSV,
   exportConsolidatedBackupCSV,
 } from '../utils/csvExport';
 import { getShiftFromTimeString } from '../utils/shift';
@@ -273,7 +272,7 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
   };
 
   // Quick action for export with feedback chime
-  const handleExport = (type: 'filtered' | 'all' | 'oee' | 'consolidated') => {
+  const handleExport = (type: 'filtered' | 'all' | 'analysis' | 'consolidated') => {
     playSuccessChime();
     let msg = '';
 
@@ -283,9 +282,9 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
     } else if (type === 'all') {
       exportStoppageRecordsCSV(records, 'stoptrack_todas_paragens');
       msg = `${records.length} registos totais exportados com sucesso!`;
-    } else if (type === 'oee') {
-      exportOeeKpiCSV(records, 'stoptrack_indicadores_oee');
-      msg = 'Relatório de Indicadores e OEE exportado em CSV!';
+    } else if (type === 'analysis') {
+      exportStoppageRecordsCSV(records, 'stoptrack_analise_intervencoes');
+      msg = 'Registos detalhados de intervenções exportados em CSV!';
     } else if (type === 'consolidated') {
       exportConsolidatedBackupCSV(records, [], [], 'stoptrack_backup_consolidado');
       msg = 'Exportação total consolidada concluída!';
@@ -962,19 +961,19 @@ export const PageHistory: React.FC<PageHistoryProps> = ({
                 </div>
               </button>
 
-              {/* Option 3: OEE and machine KPIs */}
+              {/* Option 3: intervention analysis data */}
               <button
                 type="button"
-                onClick={() => handleExport('oee')}
+                onClick={() => handleExport('analysis')}
                 className="w-full flex items-start gap-3 rounded-xl border border-slate-700 bg-slate-800/70 p-3.5 text-left hover:bg-slate-800 hover:border-slate-500 transition-colors"
               >
                 <BarChart2 className="h-5 w-5 text-sky-400 shrink-0 mt-0.5" />
                 <div>
                   <span className="text-xs font-bold text-white block">
-                    Exportar Indicadores e KPIs (OEE por Máquina)
+                    Exportar dados de análise de intervenções
                   </span>
                   <p className="text-[11px] text-slate-400 mt-0.5">
-                    Gera a folha de cálculo com resumo executivo, tempos parados por máquina (F01–F30), MTTR e distribuição percentual por avaria.
+                    Exporta os registos detalhados de intervenção, incluindo tipo, duração, indicação de paragem e etapas técnicas.
                   </p>
                 </div>
               </button>
