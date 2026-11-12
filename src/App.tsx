@@ -59,6 +59,7 @@ import {
   apiSaveDailyMachineAvailability,
   ApiError,
   hasStoredSession,
+  getAdminToken,
   clearAdminToken,
   clearOperatorToken,
 } from './services/api';
@@ -155,7 +156,6 @@ export default function App() {
   const [availabilityDate, setAvailabilityDate] = useState(getClientFactoryDate);
   const availabilityDateRef = useRef(availabilityDate);
   const availabilityInitializedRef = useRef(false);
-  const availabilityManuallyOpenedRef = useRef(false);
   const [availabilityConfirmed, setAvailabilityConfirmed] = useState(false);
   const [machineAvailability, setMachineAvailability] = useState<Record<string, MachineAvailabilityState>>(
     () => readMachineAvailability(getClientFactoryDate())
@@ -196,6 +196,7 @@ export default function App() {
   const [isBackendConnected, setIsBackendConnected] = useState<boolean>(true);
   const [requiresLogin, setRequiresLogin] = useState<boolean>(() => !hasStoredSession());
   const [isBootstrapping, setIsBootstrapping] = useState<boolean>(() => hasStoredSession());
+  const isAdminSession = Boolean(getAdminToken());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const cloudStateVersionRef = useRef(0);
   const dailyMachinePlanVersionRef = useRef(0);
@@ -334,14 +335,7 @@ export default function App() {
         setAvailabilityConfirmed(Boolean(savedAvailability));
         setAvailabilitySavedAt(savedAvailability?.savedAt ?? null);
         setAvailabilitySaveError(state.dailyMachineAvailabilityError ?? null);
-        if (previousAvailabilityDate !== serverAvailabilityDate) {
-          availabilityManuallyOpenedRef.current = false;
-        }
-        if (savedAvailability && !availabilityManuallyOpenedRef.current) {
-          setCurrentPage('home');
-        } else if (!savedAvailability) {
-          setCurrentPage('availability');
-        }
+        setCurrentPage(isAdminSession ? 'admin' : 'availability');
         availabilityInitializedRef.current = true;
       }
 
@@ -594,7 +588,6 @@ export default function App() {
   };
 
   const handleOpenAvailability = () => {
-    availabilityManuallyOpenedRef.current = true;
     setCurrentPage('availability');
   };
 
@@ -611,7 +604,6 @@ export default function App() {
       setAvailabilitySavedAt(saved.savedAt);
       availabilityInitializedRef.current = true;
       setCurrentPage('home');
-      availabilityManuallyOpenedRef.current = false;
       setIsBackendConnected(true);
       setToastMessage('Disponibilidade diária guardada no Supabase.');
     } catch (error) {
@@ -925,6 +917,7 @@ export default function App() {
   const handleOperatorAppLogin = async (operatorId: string, pin: string) => {
     await apiOperatorLogin(operatorId, pin);
     clearSensitiveState();
+    setCurrentPage('availability');
     setIsBootstrapping(true);
     setRequiresLogin(false);
   };
@@ -932,6 +925,7 @@ export default function App() {
   const handleAdminAppLogin = async (email: string, password: string) => {
     await apiAdminLogin(email, password);
     clearSensitiveState();
+    setCurrentPage('admin');
     setIsBootstrapping(true);
     setRequiresLogin(false);
   };
@@ -1002,7 +996,7 @@ export default function App() {
             type="button"
             onClick={() => {
               playIndustrialClick();
-              if (!availabilityConfirmed) {
+              if (!availabilityConfirmed && !isAdminSession) {
                 setCurrentPage('availability');
                 return;
               }
@@ -1012,7 +1006,7 @@ export default function App() {
               currentPage === 'admin'
                 ? 'border-amber-500 bg-amber-500/20 text-amber-300'
                 : 'border-slate-700 bg-slate-900 text-slate-300 hover:text-white hover:border-slate-500'
-            } ${!availabilityConfirmed ? 'opacity-50 cursor-not-allowed' : ''}`}
+            } ${!availabilityConfirmed && !isAdminSession ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <Settings2 className="h-3.5 w-3.5 text-amber-400" />
             <span>Backend</span>
@@ -1128,7 +1122,7 @@ export default function App() {
           </div>
         )}
 
-        {(currentPage === 'availability' || !availabilityConfirmed) && (
+        {(currentPage === 'availability' || (!availabilityConfirmed && !isAdminSession)) && (
           <PageAvailability
             machines={MACHINES_DATA}
             availability={machineAvailability}
@@ -1142,7 +1136,7 @@ export default function App() {
           />
         )}
 
-        {availabilityConfirmed && currentPage !== 'availability' && (
+        {(availabilityConfirmed || isAdminSession) && currentPage !== 'availability' && (
           <Suspense
             fallback={
               <div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-400">
