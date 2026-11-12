@@ -15,6 +15,7 @@ import {
   StoppageStageLevel,
   StoppageTemplate,
 } from './types/manutrack';
+import { MachineAvailabilityState, PageAvailability } from './pages/PageAvailability';
 import {
   MACHINES_DATA,
   INITIAL_STOPPAGE_TYPES,
@@ -57,11 +58,57 @@ import { PageAdmin } from './pages/PageAdmin';
 import { PageActiveMonitoring } from './pages/PageActiveMonitoring';
 import { PageManualEntry } from './pages/PageManualEntry';
 import { ShareModal } from './components/ShareModal';
-import { Smartphone, Monitor, CheckCircle, Server, Settings2, QrCode, Cloud, RefreshCw, Activity, Layers, Wrench } from 'lucide-react';
+import { Smartphone, Monitor, CheckCircle, Settings2, QrCode } from 'lucide-react';
+
+const MACHINE_AVAILABILITY_KEY = 'manutrack_machine_availability_state';
+const MACHINE_AVAILABILITY_CONFIRMED_KEY = 'manutrack_machine_availability_confirmed';
+
+function readMachineAvailability(): Record<string, MachineAvailabilityState> {
+  try {
+    const saved = localStorage.getItem(MACHINE_AVAILABILITY_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === 'object') {
+        return Object.fromEntries(
+          MACHINES_DATA.map((machine) => {
+            const state = parsed[machine.id];
+            return [
+              machine.id,
+              {
+                status: state?.status === 'Em manutenção' || state?.status === 'Indisponível' ? state.status : 'Disponível',
+                note: typeof state?.note === 'string' ? state.note : '',
+              },
+            ];
+          })
+        );
+      }
+    }
+  } catch {
+    // Ignore parse errors
+  }
+
+  return Object.fromEntries(
+    MACHINES_DATA.map((machine) => [machine.id, { status: 'Disponível' as const, note: '' }])
+  );
+}
 
 export default function App() {
   // Navigation Page
-  const [currentPage, setCurrentPage] = useState<AppPage>('home');
+  const [currentPage, setCurrentPage] = useState<AppPage>(() => {
+    try {
+      return localStorage.getItem(MACHINE_AVAILABILITY_CONFIRMED_KEY) === 'true' ? 'home' : 'availability';
+    } catch {
+      return 'availability';
+    }
+  });
+  const [availabilityConfirmed, setAvailabilityConfirmed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(MACHINE_AVAILABILITY_CONFIRMED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [machineAvailability, setMachineAvailability] = useState<Record<string, MachineAvailabilityState>>(readMachineAvailability);
 
   // Backend state: Operators and Stoppage Types
   const [operators, setOperators] = useState<Operator[]>([]);
@@ -237,6 +284,22 @@ export default function App() {
     }
   }, [currentOperator]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(MACHINE_AVAILABILITY_KEY, JSON.stringify(machineAvailability));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [machineAvailability]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MACHINE_AVAILABILITY_CONFIRMED_KEY, availabilityConfirmed ? 'true' : 'false');
+    } catch {
+      // Ignore storage errors
+    }
+  }, [availabilityConfirmed]);
+
   // Toast auto-clear
   useEffect(() => {
     if (toastMessage) {
@@ -351,8 +414,29 @@ export default function App() {
     return res;
   };
 
+  const handleOpenAvailability = () => {
+    setCurrentPage('availability');
+  };
+
+  const handleConfirmAvailability = () => {
+    setAvailabilityConfirmed(true);
+    setCurrentPage('home');
+    setToastMessage('Disponibilidade do parque confirmada. Pode avançar para o início de turno.');
+  };
+
+  const handleChangeMachineAvailability = (machineId: string, nextState: MachineAvailabilityState) => {
+    setMachineAvailability((prev) => ({
+      ...prev,
+      [machineId]: nextState,
+    }));
+  };
+
   // Page 1: Start Stoppage -> Page 2
   const handleStartStoppageFromHome = () => {
+    if (!availabilityConfirmed) {
+      setCurrentPage('availability');
+      return;
+    }
     setCurrentPage('select_machine');
   };
 
@@ -548,7 +632,7 @@ export default function App() {
 
   // Exit button on Page 1 or Page 2
   const handleExitApp = () => {
-    setCurrentPage('home');
+    setCurrentPage(availabilityConfirmed ? 'home' : 'availability');
     setToastMessage('Sessão StopTRACK em espera.');
   };
 
@@ -591,13 +675,17 @@ export default function App() {
             type="button"
             onClick={() => {
               playIndustrialClick();
+              if (!availabilityConfirmed) {
+                setCurrentPage('availability');
+                return;
+              }
               setCurrentPage('admin');
             }}
             className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors ${
               currentPage === 'admin'
                 ? 'border-amber-500 bg-amber-500/20 text-amber-300'
                 : 'border-slate-700 bg-slate-900 text-slate-300 hover:text-white hover:border-slate-500'
-            }`}
+            } ${!availabilityConfirmed ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <Settings2 className="h-3.5 w-3.5 text-amber-400" />
             <span>Backend</span>
@@ -699,8 +787,26 @@ export default function App() {
           </div>
         )}
 
+        {!availabilityConfirmed && currentPage === 'availability' && (
+          <PageAvailability
+            machines={MACHINES_DATA}
+            availability={machineAvailability}
+            onChangeMachine={handleChangeMachineAvailability}
+            onConfirm={handleConfirmAvailability}
+          />
+        )}
+
+        {!availabilityConfirmed && currentPage !== 'availability' && (
+          <PageAvailability
+            machines={MACHINES_DATA}
+            availability={machineAvailability}
+            onChangeMachine={handleChangeMachineAvailability}
+            onConfirm={handleConfirmAvailability}
+          />
+        )}
+
         {/* SCREEN 1: Página 1 (Início - Logotipo, Iniciar Paragem, Sair) */}
-        {currentPage === 'home' && (
+        {availabilityConfirmed && currentPage === 'home' && (
           <PageHome
             onStartStoppage={handleStartStoppageFromHome}
             onExit={handleExitApp}
@@ -711,13 +817,14 @@ export default function App() {
             onOpenHistory={() => setCurrentPage('history')}
             onOpenDashboard={() => setCurrentPage('dashboard')}
             onOpenAdmin={() => setCurrentPage('admin')}
+            onOpenAvailability={handleOpenAvailability}
             onOpenShare={() => setIsShareModalOpen(true)}
             totalSavedRecords={records.length}
           />
         )}
 
         {/* SCREEN 2: Página 2 (Quem Inicia & Seleção de Máquina F01–F30) */}
-        {currentPage === 'select_machine' && (
+        {availabilityConfirmed && currentPage === 'select_machine' && (
           <PageSelectMachine
             onSelectMachine={handleSelectMachine}
             onExit={() => setCurrentPage('home')}
@@ -731,7 +838,7 @@ export default function App() {
         )}
 
         {/* SCREEN 3: Página 3 (Cronómetro / Relógio da Paragem com botão Parar contagem) */}
-        {currentPage === 'timing' && (
+        {availabilityConfirmed && currentPage === 'timing' && (
           (focusedDowntime || (activeDowntimes.length > 0 ? activeDowntimes[0] : null)) ? (
             <PageTimer
               activeDowntime={focusedDowntime || activeDowntimes[0]}
@@ -760,7 +867,7 @@ export default function App() {
         )}
 
         {/* SCREEN 4: Página 4 (Resumo topo + Formulário com Quem iniciou, Quem fechou, Tipo, Descrição, O que foi feito + Gravar e Sair) */}
-        {currentPage === 'close_form' && (
+        {availabilityConfirmed && currentPage === 'close_form' && (
           (focusedDowntime || (activeDowntimes.length > 0 ? activeDowntimes[0] : null)) ? (
             <PageCloseStoppage
               activeDowntime={focusedDowntime || activeDowntimes[0]}
@@ -795,7 +902,7 @@ export default function App() {
         )}
 
         {/* SCREEN 5: Painel de Controlo / Cronómetros Ativos em Paralelo */}
-        {currentPage === 'active_monitoring' && (
+        {availabilityConfirmed && currentPage === 'active_monitoring' && (
           <PageActiveMonitoring
             activeDowntimes={activeDowntimes}
             onOpenTimer={handleOpenActiveTimer}
@@ -810,7 +917,7 @@ export default function App() {
         )}
 
         {/* SCREEN 6: Registo Manual de Paragens Retroativas */}
-        {currentPage === 'manual_entry' && (
+        {availabilityConfirmed && currentPage === 'manual_entry' && (
           <PageManualEntry
             onSaveRecord={handleSaveManualRecord}
             onBack={() => setCurrentPage('home')}
@@ -821,7 +928,7 @@ export default function App() {
         )}
 
         {/* Extra View: Histórico de Paragens */}
-        {currentPage === 'history' && (
+        {availabilityConfirmed && currentPage === 'history' && (
           <PageHistory
             records={records}
             onBackToHome={() => setCurrentPage('home')}
@@ -835,7 +942,7 @@ export default function App() {
         )}
 
         {/* Extra View: Dashboard & KPIs */}
-        {currentPage === 'dashboard' && (
+        {availabilityConfirmed && currentPage === 'dashboard' && (
           <PageDashboard
             records={records}
             onBackToHome={() => setCurrentPage('home')}
@@ -843,7 +950,7 @@ export default function App() {
         )}
 
         {/* BACKEND MANAGEMENT VIEW: Gestão de Pessoal, Tipos de Avaria, Modelos e Importação CSV */}
-        {currentPage === 'admin' && (
+        {availabilityConfirmed && currentPage === 'admin' && (
           <PageAdmin
             operators={operators}
             stoppageTypes={stoppageTypes}
