@@ -102,7 +102,7 @@ function getClientFactoryDate(date = new Date()): string {
 
 function createDefaultMachineAvailability(): Record<string, MachineAvailabilityState> {
   return Object.fromEntries(
-    MACHINES_DATA.map((machine) => [machine.id, { status: 'Disponível' as const, note: '' }])
+    MACHINES_DATA.map((machine) => [machine.id, { status: 'Indisponível' as const, note: '' }])
   );
 }
 
@@ -118,7 +118,10 @@ function readMachineAvailability(date: string): Record<string, MachineAvailabili
             return [
               machine.id,
               {
-                status: state?.status === 'Em manutenção' || state?.status === 'Indisponível' ? state.status : 'Disponível',
+                status:
+                  state?.status === 'Disponível' || state?.status === 'Em manutenção'
+                    ? state.status
+                    : 'Indisponível',
                 note: typeof state?.note === 'string' ? state.note : '',
               },
             ];
