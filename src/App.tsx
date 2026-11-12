@@ -120,6 +120,17 @@ function createMachineAvailabilityFromPlan(machineIds: string[]): Record<string,
   );
 }
 
+function areMachineAvailabilitiesEqual(
+  left: Record<string, MachineAvailabilityState>,
+  right: Record<string, MachineAvailabilityState>
+): boolean {
+  return MACHINES_DATA.every(
+    (machine) =>
+      left[machine.id]?.status === right[machine.id]?.status &&
+      left[machine.id]?.note === right[machine.id]?.note
+  );
+}
+
 function readMachineAvailability(date: string): Record<string, MachineAvailabilityState> {
   try {
     const saved = localStorage.getItem(`${MACHINE_AVAILABILITY_KEY}_${date}`);
@@ -157,11 +168,15 @@ export default function App() {
   const availabilityDateRef = useRef(availabilityDate);
   const availabilityInitializedRef = useRef(false);
   const [availabilityConfirmed, setAvailabilityConfirmed] = useState(false);
+  const [availabilityHasChanges, setAvailabilityHasChanges] = useState(false);
+  const [availabilityStepSkipped, setAvailabilityStepSkipped] = useState(false);
   const [machineAvailability, setMachineAvailability] = useState<Record<string, MachineAvailabilityState>>(
     () => readMachineAvailability(getClientFactoryDate())
   );
   const machineAvailabilityRef = useRef(machineAvailability);
   machineAvailabilityRef.current = machineAvailability;
+  const availabilityBaselineRef = useRef<Record<string, MachineAvailabilityState> | null>(null);
+  const availabilitySavedSnapshotRef = useRef<Record<string, MachineAvailabilityState> | null>(null);
   const [availabilitySavedAt, setAvailabilitySavedAt] = useState<string | null>(null);
   const [isSavingAvailability, setIsSavingAvailability] = useState(false);
   const [availabilitySaveError, setAvailabilitySaveError] = useState<string | null>(null);
@@ -329,10 +344,14 @@ export default function App() {
             ? machineAvailabilityRef.current
             : createDefaultMachineAvailability());
 
+        availabilityBaselineRef.current = nextAvailability;
+        availabilitySavedSnapshotRef.current = savedAvailability?.machines ?? null;
         availabilityDateRef.current = serverAvailabilityDate;
         setAvailabilityDate(serverAvailabilityDate);
         setMachineAvailability(nextAvailability);
         setAvailabilityConfirmed(Boolean(savedAvailability));
+        setAvailabilityHasChanges(false);
+        setAvailabilityStepSkipped(false);
         setAvailabilitySavedAt(savedAvailability?.savedAt ?? null);
         setAvailabilitySaveError(state.dailyMachineAvailabilityError ?? null);
         setCurrentPage(isAdminSession ? 'admin' : 'availability');
@@ -600,7 +619,11 @@ export default function App() {
       setAvailabilityDate(saved.date);
       setMachineAvailability(saved.machines);
       machineAvailabilityRef.current = saved.machines;
+      availabilityBaselineRef.current = saved.machines;
+      availabilitySavedSnapshotRef.current = saved.machines;
       setAvailabilityConfirmed(true);
+      setAvailabilityHasChanges(false);
+      setAvailabilityStepSkipped(false);
       setAvailabilitySavedAt(saved.savedAt);
       availabilityInitializedRef.current = true;
       setCurrentPage('home');
@@ -619,20 +642,30 @@ export default function App() {
   };
 
   const handleChangeMachineAvailability = (machineId: string, nextState: MachineAvailabilityState) => {
-    setMachineAvailability((prev) => {
-      const current = prev[machineId];
-      if (current?.status === nextState.status && current.note === nextState.note) return prev;
-      const next = { ...prev, [machineId]: nextState };
-      machineAvailabilityRef.current = next;
-      return next;
-    });
-    setAvailabilityConfirmed(false);
+    const current = machineAvailabilityRef.current;
+    const currentState = current[machineId];
+    if (currentState?.status === nextState.status && currentState.note === nextState.note) return;
+
+    const next = { ...current, [machineId]: nextState };
+    machineAvailabilityRef.current = next;
+    setMachineAvailability(next);
+    const baseline = availabilityBaselineRef.current;
+    setAvailabilityHasChanges(!baseline || !areMachineAvailabilitiesEqual(next, baseline));
+    const savedSnapshot = availabilitySavedSnapshotRef.current;
+    setAvailabilityConfirmed(Boolean(savedSnapshot && areMachineAvailabilitiesEqual(next, savedSnapshot)));
+    setAvailabilityStepSkipped(false);
     setAvailabilitySaveError(null);
+  };
+
+  const handleContinueWithoutAvailabilityChanges = () => {
+    if (availabilityHasChanges) return;
+    setAvailabilityStepSkipped(true);
+    setCurrentPage('home');
   };
 
   // Page 1: Start Stoppage -> Page 2
   const handleStartStoppageFromHome = () => {
-    if (!availabilityConfirmed) {
+    if (!availabilityConfirmed && !availabilityStepSkipped) {
       setCurrentPage('availability');
       return;
     }
@@ -906,6 +939,7 @@ export default function App() {
     clearSensitiveState();
     setRequiresLogin(true);
     setCurrentPage('home');
+    availabilityInitializedRef.current = false;
     setStoppageTypes(INITIAL_STOPPAGE_TYPES);
     setStoppageTemplates(INITIAL_STOPPAGE_TEMPLATES);
     localStorage.removeItem('manutrack_stoppage_types_cache');
@@ -917,6 +951,8 @@ export default function App() {
   const handleOperatorAppLogin = async (operatorId: string, pin: string) => {
     await apiOperatorLogin(operatorId, pin);
     clearSensitiveState();
+    availabilityInitializedRef.current = false;
+    setAvailabilityStepSkipped(false);
     setCurrentPage('availability');
     setIsBootstrapping(true);
     setRequiresLogin(false);
@@ -925,6 +961,8 @@ export default function App() {
   const handleAdminAppLogin = async (email: string, password: string) => {
     await apiAdminLogin(email, password);
     clearSensitiveState();
+    availabilityInitializedRef.current = false;
+    setAvailabilityStepSkipped(false);
     setCurrentPage('admin');
     setIsBootstrapping(true);
     setRequiresLogin(false);
@@ -1122,21 +1160,27 @@ export default function App() {
           </div>
         )}
 
-        {(currentPage === 'availability' || (!availabilityConfirmed && !isAdminSession)) && (
+        {(currentPage === 'availability' ||
+          (!availabilityConfirmed && !isAdminSession && !availabilityStepSkipped)) && (
           <PageAvailability
             machines={MACHINES_DATA}
             availability={machineAvailability}
             onChangeMachine={handleChangeMachineAvailability}
             onConfirm={handleConfirmAvailability}
+            onContinueWithoutChanges={
+              isAdminSession ? undefined : handleContinueWithoutAvailabilityChanges
+            }
             availabilityDate={availabilityDate}
             isConfirmed={availabilityConfirmed}
+            hasChanges={availabilityHasChanges}
             isSaving={isSavingAvailability}
             saveError={availabilitySaveError}
             savedAt={availabilitySavedAt}
           />
         )}
 
-        {(availabilityConfirmed || isAdminSession) && currentPage !== 'availability' && (
+        {(availabilityConfirmed || isAdminSession || availabilityStepSkipped) &&
+          currentPage !== 'availability' && (
           <Suspense
             fallback={
               <div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-400">
