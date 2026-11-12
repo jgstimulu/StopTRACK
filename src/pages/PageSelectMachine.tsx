@@ -16,7 +16,6 @@ interface PageSelectMachineProps {
   availableOperators?: Operator[];
   onOpenAdmin?: () => void;
   dailyMachinePlan: { date: string; machineIds: string[] };
-  onSetDailyMachinePlanned: (machine: Machine, planned: boolean) => Promise<void>;
 }
 
 export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
@@ -29,15 +28,12 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
   availableOperators = [],
   onOpenAdmin,
   dailyMachinePlan,
-  onSetDailyMachinePlanned,
 }) => {
   const [selectedOperatorId, setSelectedOperatorId] = useState('');
   const [operatorPin, setOperatorPin] = useState('');
   const [isStarting, setIsStarting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [isEditingPlan, setIsEditingPlan] = useState(false);
-  const [isUpdatingPlan, setIsUpdatingPlan] = useState(false);
-  const [planUpdateError, setPlanUpdateError] = useState<string | null>(null);
+  const [machineStatusNotice, setMachineStatusNotice] = useState<string | null>(null);
 
   // Automatically calculated industrial shift based on current time:
   // 05:00 - 14:30 -> 1º Turno | 14:30 - 00:00 -> 2º Turno | 00:00 - 05:00 -> Turno Noturno
@@ -52,46 +48,42 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
 
   const handleMachineClick = async (machine: Machine) => {
     playIndustrialClick();
+    setMachineStatusNotice(null);
     const existing = activeMap.get(machine.code);
     const isPlanned = dailyMachinePlan.machineIds.includes(machine.code);
-    if (isEditingPlan) {
-      setIsUpdatingPlan(true);
-      setPlanUpdateError(null);
-      try {
-        await onSetDailyMachinePlanned(machine, !isPlanned);
-      } catch (error) {
-        setPlanUpdateError(error instanceof Error ? error.message : 'Não foi possível atualizar o plano diário.');
-      } finally {
-        setIsUpdatingPlan(false);
-      }
-      return;
-    }
+
     if (existing) {
       // Machine already has an active downtime running -> allow inspecting timer
       onOpenActiveTimer(existing);
-    } else if (!isPlanned) {
       return;
-    } else {
-      // Starting a new stoppage -> operator MUST be selected
-      if (!currentOperator || !currentOperator.trim()) {
-        setValidationError('Seleção obrigatória: Escolha quem inicia a paragem antes de clicar na máquina.');
-        return;
-      }
-      const operator = startAuthorized.find((entry) => entry.id === selectedOperatorId);
-      if (!operator || !operatorPin) {
-        setValidationError('Selecione o operador e introduza o seu PIN individual.');
-        return;
-      }
-      setValidationError(null);
-      setIsStarting(true);
-      try {
-        await onSelectMachine(machine, currentOperator.trim(), currentShift.name, operator.id, operatorPin);
-        setOperatorPin('');
-      } catch (error) {
-        setValidationError(error instanceof Error ? error.message : 'Não foi possível iniciar a paragem.');
-      } finally {
-        setIsStarting(false);
-      }
+    }
+
+    if (!isPlanned) {
+      setMachineStatusNotice(
+        `A Máquina ${machine.code} encontra-se parada pela Administração (aguarda decisão se será recuperada). Apenas o Administrador pode disponibilizar esta máquina no menu de Administração.`
+      );
+      return;
+    }
+
+    // Starting a new stoppage -> operator MUST be selected
+    if (!currentOperator || !currentOperator.trim()) {
+      setValidationError('Seleção obrigatória: Escolha quem inicia a paragem antes de clicar na máquina.');
+      return;
+    }
+    const operator = startAuthorized.find((entry) => entry.id === selectedOperatorId);
+    if (!operator || !operatorPin) {
+      setValidationError('Selecione o operador e introduza o seu PIN individual.');
+      return;
+    }
+    setValidationError(null);
+    setIsStarting(true);
+    try {
+      await onSelectMachine(machine, currentOperator.trim(), currentShift.name, operator.id, operatorPin);
+      setOperatorPin('');
+    } catch (error) {
+      setValidationError(error instanceof Error ? error.message : 'Não foi possível iniciar a paragem.');
+    } finally {
+      setIsStarting(false);
     }
   };
 
@@ -204,39 +196,65 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
             </div>
         </div>
 
-        <div className="mt-3 rounded-xl border border-slate-700/80 bg-slate-900/90 px-3 py-2.5">
-          <div className="flex items-center justify-between gap-2">
+        <div className="mt-3 rounded-xl border border-slate-700/80 bg-slate-900/90 px-3.5 py-3 shadow-md">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
-              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
-                Plano diário {dailyMachinePlan.date ? `· ${dailyMachinePlan.date.split('-').reverse().join('/')}` : ''}
-              </p>
+              <div className="flex items-center gap-2">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-200">
+                  Disponibilidade do Parque de Máquinas (F01–F30)
+                </p>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                  Apenas Leitura
+                </span>
+              </div>
               <p className="mt-0.5 text-[10px] text-slate-400">
-                {isEditingPlan ? 'Toque nas máquinas para incluir ou retirar do plano.' : 'Máquinas bloqueadas não podem iniciar paragens.'}
+                Máquinas antigas com fornecedor extinto. O estado de disponibilidade é definido pela Administração.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setIsEditingPlan((editing) => !editing);
-                setPlanUpdateError(null);
-              }}
-              disabled={isUpdatingPlan}
-              className={`shrink-0 rounded-lg border px-3 py-2 text-[10px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                isEditingPlan
-                  ? 'border-emerald-500/60 bg-emerald-950/50 text-emerald-300 hover:bg-emerald-900/50'
-                  : 'border-slate-600 bg-slate-800 text-slate-200 hover:border-amber-500 hover:text-amber-300'
-              }`}
-            >
-              {isEditingPlan ? 'Concluir edição' : 'Editar plano do dia'}
-            </button>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/60 px-2.5 py-1 text-[11px] font-bold text-emerald-300 font-mono">
+                <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
+                {dailyMachinePlan.machineIds.length} Disponíveis (A trabalhar)
+              </span>
+              {MACHINES_DATA.length - dailyMachinePlan.machineIds.length > 0 && (
+                <span className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/60 px-2.5 py-1 text-[11px] font-bold text-rose-300 font-mono">
+                  <Lock className="h-3 w-3 text-rose-400" />
+                  {MACHINES_DATA.length - dailyMachinePlan.machineIds.length} Paradas (Aguarda Decisão)
+                </span>
+              )}
+            </div>
           </div>
-          {planUpdateError && (
-            <p className="mt-2 text-[11px] font-semibold text-rose-400" role="alert">{planUpdateError}</p>
+
+          {machineStatusNotice && (
+            <div className="mt-2.5 rounded-lg border border-rose-500/60 bg-rose-950/80 p-2.5 text-xs text-rose-200 flex items-start gap-2 shadow-sm animate-fadeIn">
+              <AlertCircle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="font-semibold">{machineStatusNotice}</p>
+                <p className="text-[10px] text-rose-300/80 mt-0.5">
+                  Para alterar a disponibilidade, aceda ao menu Administração com credenciais de Administrador.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMachineStatusNotice(null)}
+                className="text-rose-400 hover:text-white text-xs font-bold px-1"
+              >
+                ×
+              </button>
+            </div>
           )}
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-400">
-            <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Planeada</span>
-            <span className="flex items-center gap-1"><Lock className="h-3 w-3 text-rose-400" /> Fora do plano</span>
-            <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-rose-500" /> Parada</span>
+
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-slate-400 border-t border-slate-800/80 pt-2">
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" /> Disponível (A trabalhar)
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-rose-500" /> Avaria / Parada Ativa
+            </span>
+            <span className="flex items-center gap-1">
+              <Lock className="h-3 w-3 text-rose-400" /> Parada (Aguarda Decisão da Administração)
+            </span>
           </div>
         </div>
       </div>
@@ -249,31 +267,27 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
             const isStopped = !!active;
             const isPlanned = dailyMachinePlan.machineIds.includes(machine.code);
             const isLocked = !isPlanned;
-            const isDisabled = isStarting || (isUpdatingPlan && isEditingPlan) || (!isEditingPlan && isLocked && !isStopped);
-            const planColor = isPlanned
-              ? 'border-emerald-500 bg-emerald-950/50 text-white hover:bg-emerald-900/60'
-              : 'border-rose-500/70 bg-rose-950/40 text-rose-200 hover:bg-rose-900/50';
 
             return (
               <button
                 key={machine.code}
                 type="button"
                 onClick={() => handleMachineClick(machine)}
-                disabled={isDisabled}
-                aria-label={`${machine.code}, ${isStopped ? 'parada ativa' : isPlanned ? 'planeada' : 'bloqueada'}`}
-                title={!isEditingPlan && isLocked && !isStopped ? 'Inclua no plano diário para iniciar uma paragem' : undefined}
-                className={`relative flex min-h-[58px] sm:min-h-[64px] flex-col items-center justify-center rounded-xl border-2 p-1.5 transition-all active:scale-[0.95] disabled:cursor-not-allowed disabled:opacity-80 ${
-                  isEditingPlan
-                    ? planColor
-                    : isStopped
-                      ? 'border-rose-500 bg-rose-950/60 text-white shadow-md shadow-rose-950/40 ring-1 ring-rose-500'
-                      : isPlanned
-                        ? 'border-emerald-500 bg-emerald-950/50 text-white hover:border-emerald-400 hover:bg-emerald-900/60 shadow-sm'
-                        : 'border-rose-500/70 bg-rose-950/40 text-rose-200 shadow-sm'
+                disabled={isStarting}
+                aria-label={`${machine.code}, ${isStopped ? 'parada ativa' : isPlanned ? 'disponível a trabalhar' : 'parada aguardando decisão'}`}
+                title={isLocked ? `Máquina ${machine.code} parada aguardando decisão da administração` : undefined}
+                className={`relative flex min-h-[58px] sm:min-h-[64px] flex-col items-center justify-center rounded-xl border-2 p-1.5 transition-all active:scale-[0.95] ${
+                  isStopped
+                    ? 'border-rose-500 bg-rose-950/60 text-white shadow-md shadow-rose-950/40 ring-1 ring-rose-500'
+                    : isPlanned
+                      ? 'border-emerald-500/70 bg-emerald-950/30 text-white hover:border-emerald-400 hover:bg-emerald-900/50 shadow-sm'
+                      : 'border-slate-800 bg-slate-950/80 text-slate-500 hover:border-rose-500/40 shadow-sm opacity-60'
                 }`}
               >
-                {isLocked && (
-                  <Lock className="absolute -left-1 -top-1 h-4 w-4 rounded-full bg-slate-950 p-0.5 text-rose-400" />
+                {isLocked && !isStopped && (
+                  <span className="absolute -left-1 -top-1 rounded-full bg-slate-900 border border-rose-500/50 p-0.5 text-rose-400" title="Parada aguardando decisão">
+                    <Lock className="h-3 w-3" />
+                  </span>
                 )}
                 {/* Active Indicator if machine has ongoing downtime */}
                 {isStopped && (
@@ -289,10 +303,10 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
 
                 <span
                   className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-tight mt-0.5 ${
-                    isStopped ? 'text-rose-300' : isPlanned ? 'text-emerald-300' : 'text-rose-300'
+                    isStopped ? 'text-rose-300' : isPlanned ? 'text-emerald-400' : 'text-slate-500'
                   }`}
                 >
-                  {isStopped ? 'Parada' : isPlanned ? 'Planeada' : 'Bloqueada'}
+                  {isStopped ? 'Parada' : isPlanned ? 'Disponível' : 'Em Decisão'}
                 </span>
               </button>
             );

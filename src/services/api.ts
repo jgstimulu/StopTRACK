@@ -222,22 +222,38 @@ export async function apiSetDailyMachinePlanned(
   machineId: string,
   planned: boolean
 ): Promise<{ date: string; machineId: string; planned: boolean }> {
-  const tokens = [getOperatorToken(), getAdminToken()].filter((token): token is string => Boolean(token));
-  if (!tokens.length) {
-    throw new ApiError('Sessão necessária. Inicie sessão para continuar.', 401);
+  const adminToken = getAdminToken();
+  const token = adminToken || getOperatorToken();
+  if (!token) {
+    throw new ApiError('Sessão de Administrador necessária para alterar o estado das máquinas.', 401);
   }
-  let lastError: ApiError = new ApiError('Falha ao atualizar o plano diário de máquinas.', 500);
-  for (const token of tokens) {
-    const res = await fetch(`/api/daily-machine-plan/${encodeURIComponent(machineId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-      body: JSON.stringify({ planned }),
-    });
-    if (res.ok) return await res.json();
-    lastError = await responseError(res, 'Falha ao atualizar o plano diário de máquinas.');
-    if (res.status !== 401) throw lastError;
+  const res = await fetch(`/api/daily-machine-plan/${encodeURIComponent(machineId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ planned }),
+  });
+  if (!res.ok) {
+    throw await responseError(res, 'Falha ao atualizar o estado da máquina.');
   }
-  throw lastError;
+  return await res.json();
+}
+
+export async function apiSetAllDailyMachinesPlanned(
+  machineIds: string[]
+): Promise<{ date: string; machineIds: string[] }> {
+  const token = getAdminToken() || getOperatorToken();
+  if (!token) {
+    throw new ApiError('Sessão de Administrador necessária para alterar o parque de máquinas.', 401);
+  }
+  const res = await fetch('/api/daily-machine-plan', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ machineIds }),
+  });
+  if (!res.ok) {
+    throw await responseError(res, 'Falha ao atualizar o parque de máquinas.');
+  }
+  return await res.json();
 }
 
 export async function apiCancelActiveDowntime(machineId: string): Promise<void> {

@@ -53,6 +53,7 @@ import {
   apiAdminLogout,
   apiOperatorLogout,
   apiSetDailyMachinePlanned,
+  apiSetAllDailyMachinesPlanned,
   ApiError,
   hasStoredSession,
   clearAdminToken,
@@ -482,6 +483,12 @@ export default function App() {
       else machineIds.delete(result.machineId);
       return { date: result.date, machineIds: [...machineIds].sort() };
     });
+  };
+
+  const handleSetAllDailyMachinesPlanned = async (machineIds: string[]) => {
+    const result = await apiSetAllDailyMachinesPlanned(machineIds);
+    dailyMachinePlanVersionRef.current += 1;
+    setDailyMachinePlan({ date: result.date, machineIds: result.machineIds });
   };
 
   // Page 2: A planned machine starts its downtime timer in the cloud & opens Page 3
@@ -979,7 +986,6 @@ export default function App() {
             availableOperators={operators}
             onOpenAdmin={() => setCurrentPage('admin')}
             dailyMachinePlan={dailyMachinePlan}
-            onSetDailyMachinePlanned={handleSetDailyMachinePlanned}
           />
         )}
 
@@ -1095,13 +1101,16 @@ export default function App() {
           />
         )}
 
-        {/* BACKEND MANAGEMENT VIEW: Gestão de Pessoal, Tipos de Avaria, Modelos e Importação CSV */}
+        {/* BACKEND MANAGEMENT VIEW: Gestão de Pessoal, Tipos de Avaria, Modelos, Parque de Máquinas e Importação CSV */}
         {currentPage === 'admin' && (
           <PageAdmin
             operators={operators}
             stoppageTypes={stoppageTypes}
             stoppageTemplates={stoppageTemplates}
             stoppageRecords={records}
+            dailyMachinePlan={dailyMachinePlan}
+            onSetDailyMachinePlanned={handleSetDailyMachinePlanned}
+            onSetAllDailyMachinesPlanned={handleSetAllDailyMachinesPlanned}
             onAddOperator={handleAddOperator}
             onUpdateOperator={handleUpdateOperator}
             onDeleteOperator={handleDeleteOperator}

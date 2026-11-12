@@ -425,6 +425,10 @@ function requireSession(req: express.Request, res: express.Response, next: expre
   }).catch((error) => respondWithStoreError(res, error));
 }
 
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', serverTime: Date.now() });
+});
+
 app.use('/api', (req, res, next) => {
   void initializeSupabaseStorage()
     .then(() => next())
@@ -661,17 +665,32 @@ app.get('/api/state', requireSession, async (_req, res) => {
   }
 });
 
-app.put('/api/daily-machine-plan/:machineId', requireSession, async (req, res) => {
+app.put('/api/daily-machine-plan/:machineId', requireAdminAuth, async (req, res) => {
   const machineId = req.params.machineId.trim().toUpperCase();
   const { planned } = req.body || {};
   if (!isValidMachineCode(machineId) || typeof planned !== 'boolean') {
-    return res.status(400).json({ error: 'Dados inválidos para atualizar o plano diário de máquinas.' });
+    return res.status(400).json({ error: 'Dados inválidos para atualizar o estado da máquina.' });
   }
 
   try {
     const planDate = getFactoryDate();
     await supabaseStore.setDailyMachinePlanned(planDate, machineId, planned);
     res.json({ date: planDate, machineId, planned });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.put('/api/daily-machine-plan', requireAdminAuth, async (req, res) => {
+  const { machineIds } = req.body || {};
+  if (!Array.isArray(machineIds)) {
+    return res.status(400).json({ error: 'Lista de identificadores de máquina inválida.' });
+  }
+
+  try {
+    const planDate = getFactoryDate();
+    await supabaseStore.setAllDailyMachinesPlanned(planDate, machineIds);
+    res.json({ date: planDate, machineIds });
   } catch (error) {
     return respondWithStoreError(res, error);
   }

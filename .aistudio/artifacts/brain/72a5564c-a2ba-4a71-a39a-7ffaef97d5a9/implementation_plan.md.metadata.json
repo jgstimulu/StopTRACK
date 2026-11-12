@@ -1,6 +1,0 @@
-{
-  "summary":  "Plano de implementação para resiliência total na gravação de paragens: eliminação de bloqueios de concorrência no Supabase, gravação garantida sempre no servidor e no dispositivo, e sincronização offline automática em segundo plano.",
-  "updatedAt":  "2026-11-11T09:39:57.398147766Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

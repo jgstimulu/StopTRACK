@@ -226,13 +226,32 @@ export async function getStoppageTypes() {
 }
 
 export async function getDailyMachinePlan(date: string): Promise<string[]> {
-  const query = new URLSearchParams({
-    select: 'machine_id',
-    plan_date: `eq.${date}`,
-    order: 'machine_id.asc',
-  });
-  const rows = await request<DailyMachinePlanRow[]>(`/daily_machine_plan?${query}`);
-  return (rows || []).map((row) => row.machine_id);
+  try {
+    const query = new URLSearchParams({
+      select: 'machine_id',
+      plan_date: `eq.${date}`,
+      order: 'machine_id.asc',
+    });
+    const rows = await request<DailyMachinePlanRow[]>(`/daily_machine_plan?${query}`);
+    if (rows && rows.length > 0) {
+      return rows.map((row) => row.machine_id);
+    }
+  } catch (error) {
+    console.warn('Tabela daily_machine_plan indisponível no Supabase, a recorrer a app_settings:', error);
+  }
+
+  // Fallback to app_settings
+  try {
+    const settingPlan = await getSetting<{ date?: string; machineIds?: string[] }>('daily_machine_plan');
+    if (settingPlan?.machineIds && Array.isArray(settingPlan.machineIds) && settingPlan.machineIds.length > 0) {
+      return settingPlan.machineIds;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Predefinição da fábrica: Todas as 30 máquinas disponíveis (F01 a F30)
+  return Array.from({ length: 30 }, (_, i) => `F${(i + 1).toString().padStart(2, '0')}`);
 }
 
 export async function setDailyMachinePlanned(
@@ -240,19 +259,64 @@ export async function setDailyMachinePlanned(
   machineId: string,
   planned: boolean
 ): Promise<void> {
-  const query = new URLSearchParams({
-    plan_date: `eq.${date}`,
-    machine_id: `eq.${machineId}`,
-  });
-  if (!planned) {
-    await request(`/daily_machine_plan?${query}`, { method: 'DELETE' });
-    return;
+  const currentList = await getDailyMachinePlan(date);
+  const set = new Set(currentList);
+  if (planned) set.add(machineId);
+  else set.delete(machineId);
+  const updatedList = Array.from(set).sort();
+
+  // Guardar em app_settings para garantia e resiliência
+  try {
+    await setSetting('daily_machine_plan', { date, machineIds: updatedList });
+  } catch (settingErr) {
+    console.warn('Erro ao guardar plano em app_settings:', settingErr);
   }
-  await request('/daily_machine_plan?on_conflict=plan_date,machine_id', {
-    method: 'POST',
-    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify({ plan_date: date, machine_id: machineId }),
-  });
+
+  // Tentar guardar na tabela daily_machine_plan se existir
+  try {
+    const query = new URLSearchParams({
+      plan_date: `eq.${date}`,
+      machine_id: `eq.${machineId}`,
+    });
+    if (!planned) {
+      await request(`/daily_machine_plan?${query}`, { method: 'DELETE' });
+      return;
+    }
+    await request('/daily_machine_plan?on_conflict=plan_date,machine_id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ plan_date: date, machine_id: machineId }),
+    });
+  } catch (tableErr) {
+    console.warn('Aviso não fatal ao gravar em daily_machine_plan:', tableErr);
+  }
+}
+
+export async function setAllDailyMachinesPlanned(
+  date: string,
+  machineIds: string[]
+): Promise<void> {
+  const normalized = Array.from(new Set(machineIds.map((m) => m.trim().toUpperCase()))).sort();
+
+  try {
+    await setSetting('daily_machine_plan', { date, machineIds: normalized });
+  } catch (settingErr) {
+    console.warn('Erro ao guardar lote em app_settings:', settingErr);
+  }
+
+  try {
+    const query = new URLSearchParams({ plan_date: `eq.${date}` });
+    await request(`/daily_machine_plan?${query}`, { method: 'DELETE' });
+    if (normalized.length > 0) {
+      await request('/daily_machine_plan', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify(normalized.map((id) => ({ plan_date: date, machine_id: id }))),
+      });
+    }
+  } catch (tableErr) {
+    console.warn('Aviso não fatal ao gravar lote em daily_machine_plan:', tableErr);
+  }
 }
 
 export async function createStoppageType(stoppageType: Record<string, unknown> & { id: string }) {

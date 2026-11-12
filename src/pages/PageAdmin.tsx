@@ -36,9 +36,11 @@ import {
   Database,
   Sparkles,
   Tag,
+  Cpu,
 } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
-import { Operator, StoppageTypeItem, StoppageRecord, StoppageTemplate } from '../types/manutrack';
+import { Operator, StoppageTypeItem, StoppageRecord, StoppageTemplate, Machine } from '../types/manutrack';
+import { MACHINES_DATA } from '../data/initialData';
 import { playIndustrialClick, playSuccessChime } from '../utils/audio';
 import {
   parseCSVStoppagesWithMapping,
@@ -60,6 +62,9 @@ interface PageAdminProps {
   stoppageTypes: StoppageTypeItem[];
   stoppageTemplates?: StoppageTemplate[];
   stoppageRecords: StoppageRecord[];
+  dailyMachinePlan?: { date: string; machineIds: string[] };
+  onSetDailyMachinePlanned?: (machine: Machine, planned: boolean) => Promise<void>;
+  onSetAllDailyMachinesPlanned?: (machineIds: string[]) => Promise<void>;
   onAddOperator: (data: Omit<Operator, 'id' | 'active'>, pin: string) => Promise<void>;
   onUpdateOperator: (id: string, data: Partial<Operator> & { pin?: string }) => Promise<void>;
   onDeleteOperator: (id: string) => Promise<void>;
@@ -82,6 +87,9 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   stoppageTypes,
   stoppageTemplates = [],
   stoppageRecords,
+  dailyMachinePlan = { date: '', machineIds: [] },
+  onSetDailyMachinePlanned,
+  onSetAllDailyMachinesPlanned,
   onAddOperator,
   onUpdateOperator,
   onDeleteOperator,
@@ -107,8 +115,13 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
-  // Tabs: 'operators' | 'stoppage_types' | 'stoppage_templates' | 'import_csv' | 'security'
-  const [activeTab, setActiveTab] = useState<'operators' | 'stoppage_types' | 'stoppage_templates' | 'import_csv' | 'security'>('operators');
+  // Tabs: 'operators' | 'stoppage_types' | 'stoppage_templates' | 'machines' | 'import_csv' | 'security'
+  const [activeTab, setActiveTab] = useState<'operators' | 'stoppage_types' | 'stoppage_templates' | 'machines' | 'import_csv' | 'security'>('operators');
+
+  // Machine Management tab state
+  const [machineLineFilter, setMachineLineFilter] = useState<'all' | 'linha1' | 'linha2' | 'linha3'>('all');
+  const [togglingMachineId, setTogglingMachineId] = useState<string | null>(null);
+  const [machineActionLoading, setMachineActionLoading] = useState<boolean>(false);
 
   // Operator form state
   const [showOpForm, setShowOpForm] = useState(false);
@@ -433,6 +446,43 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
       setFormErrorMsg(err instanceof Error ? err.message : 'Erro ao gravar modelo');
     } finally {
       setIsSavingTpl(false);
+    }
+  };
+
+  // Machine Availability Handlers (Admin Only)
+  const handleToggleMachine = async (machine: Machine, currentlyPlanned: boolean) => {
+    if (!onSetDailyMachinePlanned) return;
+    playIndustrialClick();
+    setTogglingMachineId(machine.code);
+    try {
+      await onSetDailyMachinePlanned(machine, !currentlyPlanned);
+      playSuccessChime();
+      showFeedback(
+        !currentlyPlanned
+          ? `Máquina ${machine.code} disponibilizada (A trabalhar)!`
+          : `Máquina ${machine.code} marcada como Parada (Aguarda Decisão).`
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao atualizar estado da máquina.';
+      showFeedback(msg);
+    } finally {
+      setTogglingMachineId(null);
+    }
+  };
+
+  const handleSetAllMachines = async (machineCodes: string[]) => {
+    if (!onSetAllDailyMachinesPlanned) return;
+    playIndustrialClick();
+    setMachineActionLoading(true);
+    try {
+      await onSetAllDailyMachinesPlanned(machineCodes);
+      playSuccessChime();
+      showFeedback('Disponibilidade do parque de máquinas atualizada com sucesso!');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao atualizar máquinas.';
+      showFeedback(msg);
+    } finally {
+      setMachineActionLoading(false);
     }
   };
 
@@ -974,8 +1024,8 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
           </div>
         )}
 
-        {/* 5 Tabs: Pessoal, Tipos de Avaria, Catálogo de Modelos, Importar CSV e Segurança */}
-        <div className="mt-4 grid grid-cols-3 sm:grid-cols-5 gap-1 rounded-xl bg-slate-900/90 p-1 border border-slate-800">
+        {/* 6 Tabs: Pessoal, Tipos de Avaria, Catálogo de Modelos, Parque de Máquinas, Importar CSV e Segurança */}
+        <div className="mt-4 grid grid-cols-3 sm:grid-cols-6 gap-1 rounded-xl bg-slate-900/90 p-1 border border-slate-800">
           <button
             type="button"
             onClick={() => {
@@ -1022,6 +1072,22 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
           >
             <Sparkles className="h-3 w-3 shrink-0" />
             <span className="truncate">Catálogo ({stoppageTemplates.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              playIndustrialClick();
+              setActiveTab('machines');
+            }}
+            className={`flex items-center justify-center gap-1 rounded-lg py-2 px-1 text-[10px] sm:text-xs font-bold transition-all ${
+              activeTab === 'machines'
+                ? 'bg-amber-500 text-slate-950 shadow-sm'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Cpu className="h-3 w-3 shrink-0" />
+            <span className="truncate">Máquinas ({dailyMachinePlan?.machineIds?.length ?? 30}/30)</span>
           </button>
 
           <button
@@ -1797,7 +1863,243 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
         </div>
       )}
 
-      {/* TAB 4: IMPORTAÇÃO CSV DE DADOS DA VERSÃO ANTERIOR */}
+      {/* TAB: GESTÃO DO PARQUE DE MÁQUINAS (DISPONIBILIDADE E RECUPERAÇÃO) */}
+      {activeTab === 'machines' && (
+        <div className="my-4 flex-1 space-y-4">
+          {/* Header Card with Business Context */}
+          <div className="rounded-xl border border-slate-700/80 bg-slate-900/90 p-4 shadow-md">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-500/20 text-amber-400">
+                  <Cpu className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                    Disponibilidade do Parque de Máquinas (F01–F30)
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Equipamentos antigos com fornecedor extinto. Defina as máquinas disponíveis (em funcionamento) e as paradas aguardando decisão de recuperação.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                <span className="rounded-lg border border-amber-500/40 bg-amber-950/60 px-2.5 py-1 text-[11px] font-bold text-amber-300">
+                  Configuração Exclusiva de Administrador
+                </span>
+              </div>
+            </div>
+
+            {/* KPI Summary Cards */}
+            <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+              <div className="rounded-lg border border-slate-800 bg-slate-950/80 p-3 text-center">
+                <span className="text-[10px] font-bold uppercase text-slate-400 block truncate">
+                  Total de Máquinas
+                </span>
+                <span className="text-2xl font-black font-mono text-white block mt-1">30</span>
+                <span className="text-[10px] text-slate-500">Parque F01–F30</span>
+              </div>
+
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/40 p-3 text-center">
+                <span className="text-[10px] font-bold uppercase text-emerald-400 block truncate">
+                  Disponíveis (A trabalhar)
+                </span>
+                <span className="text-2xl font-black font-mono text-emerald-300 block mt-1">
+                  {dailyMachinePlan.machineIds.length}
+                </span>
+                <span className="text-[10px] text-emerald-400/80">Aptas a operar</span>
+              </div>
+
+              <div className="rounded-lg border border-rose-500/30 bg-rose-950/40 p-3 text-center col-span-2 sm:col-span-1">
+                <span className="text-[10px] font-bold uppercase text-rose-400 block truncate">
+                  Paradas (Aguarda Decisão)
+                </span>
+                <span className="text-2xl font-black font-mono text-rose-300 block mt-1">
+                  {Math.max(0, 30 - dailyMachinePlan.machineIds.length)}
+                </span>
+                <span className="text-[10px] text-rose-400/80">Fora de serviço / Em análise</span>
+              </div>
+            </div>
+
+            {/* Batch Action Buttons */}
+            <div className="mt-4 flex flex-wrap items-center gap-2 pt-3 border-t border-slate-800">
+              <span className="text-[11px] font-bold text-slate-400 shrink-0">Ações Rápidas:</span>
+              <button
+                type="button"
+                onClick={() => handleSetAllMachines(MACHINES_DATA.map((m) => m.code))}
+                disabled={machineActionLoading}
+                className="rounded-lg border border-emerald-500/40 bg-emerald-950/60 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-900/60 transition-colors disabled:opacity-50"
+              >
+                Disponibilizar Todas (30 Máquinas)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const l1 = MACHINES_DATA.filter((m) => m.section === 'Linha 1').map((m) => m.code);
+                  const currentWithoutL1 = dailyMachinePlan.machineIds.filter(
+                    (id) => !l1.includes(id)
+                  );
+                  handleSetAllMachines([...currentWithoutL1, ...l1]);
+                }}
+                disabled={machineActionLoading}
+                className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition-colors disabled:opacity-50"
+              >
+                Ativar Linha 1 (F01–F10)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const l2 = MACHINES_DATA.filter((m) => m.section === 'Linha 2').map((m) => m.code);
+                  const currentWithoutL2 = dailyMachinePlan.machineIds.filter(
+                    (id) => !l2.includes(id)
+                  );
+                  handleSetAllMachines([...currentWithoutL2, ...l2]);
+                }}
+                disabled={machineActionLoading}
+                className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition-colors disabled:opacity-50"
+              >
+                Ativar Linha 2 (F11–F20)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const l3 = MACHINES_DATA.filter((m) => m.section === 'Linha 3').map((m) => m.code);
+                  const currentWithoutL3 = dailyMachinePlan.machineIds.filter(
+                    (id) => !l3.includes(id)
+                  );
+                  handleSetAllMachines([...currentWithoutL3, ...l3]);
+                }}
+                disabled={machineActionLoading}
+                className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition-colors disabled:opacity-50"
+              >
+                Ativar Linha 3 (F21–F30)
+              </button>
+            </div>
+          </div>
+
+          {/* Line Filter Tabs */}
+          <div className="flex items-center gap-1 text-[11px] font-bold rounded-xl border border-slate-800 bg-slate-900/80 p-1.5">
+            <span className="text-slate-400 px-2 shrink-0">Filtrar Vista:</span>
+            {(
+              [
+                { id: 'all', label: 'Todas as Máquinas (30)' },
+                { id: 'linha1', label: 'Linha 1 (F01–F10)' },
+                { id: 'linha2', label: 'Linha 2 (F11–F20)' },
+                { id: 'linha3', label: 'Linha 3 (F21–F30)' },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => {
+                  playIndustrialClick();
+                  setMachineLineFilter(f.id);
+                }}
+                className={`flex-1 rounded-lg py-1.5 px-2 text-center transition-all ${
+                  machineLineFilter === f.id
+                    ? 'bg-amber-500 text-slate-950 font-black shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Machine Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            {MACHINES_DATA.filter((m) => {
+              if (machineLineFilter === 'all') return true;
+              if (machineLineFilter === 'linha1') return m.section === 'Linha 1';
+              if (machineLineFilter === 'linha2') return m.section === 'Linha 2';
+              return m.section === 'Linha 3';
+            }).map((machine) => {
+              const isPlanned = dailyMachinePlan.machineIds.includes(machine.code);
+              const isUpdating = togglingMachineId === machine.code;
+
+              return (
+                <div
+                  key={machine.code}
+                  className={`rounded-xl border p-3.5 transition-all flex flex-col justify-between ${
+                    isPlanned
+                      ? 'border-emerald-500/40 bg-slate-900/90 shadow-sm'
+                      : 'border-slate-800 bg-slate-950/90 opacity-75'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-base font-black px-2 py-0.5 rounded bg-slate-800 text-white border border-slate-700">
+                        {machine.code}
+                      </span>
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-200">{machine.name}</h4>
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          {machine.section}
+                        </span>
+                      </div>
+                    </div>
+
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold font-mono border ${
+                        isPlanned
+                          ? 'border-emerald-500/40 bg-emerald-950/60 text-emerald-300'
+                          : 'border-rose-500/40 bg-rose-950/60 text-rose-300'
+                      }`}
+                    >
+                      {isPlanned ? (
+                        <>
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+                          Disponível
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="h-3 w-3" />
+                          Parada
+                        </>
+                      )}
+                    </span>
+                  </div>
+
+                  <p className="mt-2.5 text-[10px] text-slate-400 leading-snug min-h-[28px]">
+                    {isPlanned
+                      ? 'Em funcionamento normal na produção. Operadores podem iniciar paragens e afinações.'
+                      : 'Parada por decisão de gestão. Aguarda decisão se será recuperada ou abatida.'}
+                  </p>
+
+                  <div className="mt-3 pt-2.5 border-t border-slate-800/80">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleMachine(machine, isPlanned)}
+                      disabled={isUpdating || machineActionLoading}
+                      className={`w-full rounded-lg py-2 px-3 text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                        isPlanned
+                          ? 'border border-rose-500/40 bg-rose-950/40 text-rose-300 hover:bg-rose-900/50'
+                          : 'border border-emerald-500/40 bg-emerald-950/50 text-emerald-300 hover:bg-emerald-900/60'
+                      } disabled:opacity-50`}
+                    >
+                      {isUpdating ? (
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      ) : isPlanned ? (
+                        <>
+                          <Lock className="h-3.5 w-3.5" />
+                          <span>Marcar como Parada (Em Decisão)</span>
+                        </>
+                      ) : (
+                        <>
+                          <Check className="h-3.5 w-3.5" />
+                          <span>Disponibilizar Máquina</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* TAB: IMPORTAÇÃO CSV DE DADOS DA VERSÃO ANTERIOR */}
 
       {activeTab === 'import_csv' && (
         <div className="my-4 flex-1 space-y-4">
