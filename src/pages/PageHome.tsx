@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, LogOut, History, ShieldAlert, CheckCircle2, ChevronRight, BarChart3, Settings2, QrCode } from 'lucide-react';
+import { Play, LogOut, History, CheckCircle2, ChevronRight, BarChart3, Settings2, QrCode } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
 import { ActiveDowntime } from '../types/manutrack';
 import { playIndustrialClick } from '../utils/audio';
@@ -14,6 +14,7 @@ interface PageHomeProps {
   onOpenHistory: () => void;
   onOpenDashboard: () => void;
   onOpenAdmin: () => void;
+  onOpenAvailability: () => void;
   onOpenShare?: () => void;
   totalSavedRecords: number;
 }
@@ -28,6 +29,7 @@ export const PageHome: React.FC<PageHomeProps> = ({
   onOpenHistory,
   onOpenDashboard,
   onOpenAdmin,
+  onOpenAvailability,
   onOpenShare,
   totalSavedRecords,
 }) => {
@@ -170,12 +172,12 @@ export const PageHome: React.FC<PageHomeProps> = ({
             <button
               onClick={() => {
                 playIndustrialClick();
-                onOpenHistory();
+                onOpenAvailability();
               }}
-              className="flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 py-2.5 px-3 text-xs font-semibold text-slate-200 hover:bg-slate-700/80 hover:text-white transition-all active:scale-[0.98]"
+              className="flex items-center justify-center gap-2 rounded-xl border border-sky-500/40 bg-sky-950/40 py-2.5 px-3 text-xs font-semibold text-sky-200 hover:bg-sky-900/50 transition-all active:scale-[0.98]"
             >
-              <History className="h-4 w-4 text-amber-400 shrink-0" />
-              <span className="truncate">Histórico ({totalSavedRecords})</span>
+              <CheckCircle2 className="h-4 w-4 text-sky-400 shrink-0" />
+              <span className="truncate">Disponibilidade</span>
             </button>
 
             <button
@@ -190,8 +192,18 @@ export const PageHome: React.FC<PageHomeProps> = ({
             </button>
           </div>
 
-          {/* Backend & Partilha Actions */}
-          <div className="mt-2.5 grid grid-cols-2 gap-2">
+          <div className="mt-2.5 grid grid-cols-2 gap-2.5">
+            <button
+              onClick={() => {
+                playIndustrialClick();
+                onOpenHistory();
+              }}
+              className="flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 py-2.5 px-3 text-xs font-semibold text-slate-200 hover:bg-slate-700/80 hover:text-white transition-all active:scale-[0.98]"
+            >
+              <History className="h-4 w-4 text-amber-400 shrink-0" />
+              <span className="truncate">Histórico ({totalSavedRecords})</span>
+            </button>
+
             <button
               onClick={() => {
                 playIndustrialClick();
@@ -202,20 +214,22 @@ export const PageHome: React.FC<PageHomeProps> = ({
               <Settings2 className="h-3.5 w-3.5 text-amber-400 shrink-0" />
               <span className="truncate">Backend & Pessoal</span>
             </button>
+          </div>
 
-            {onOpenShare && (
+          {onOpenShare && (
+            <div className="mt-2.5 flex justify-center">
               <button
                 onClick={() => {
                   playIndustrialClick();
                   onOpenShare();
                 }}
-                className="flex items-center justify-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-950/20 py-2 px-2 text-xs font-bold text-amber-300 hover:bg-amber-900/30 hover:border-amber-500/50 transition-all active:scale-[0.98]"
+                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-950/20 py-2 px-2 text-xs font-bold text-amber-300 hover:bg-amber-900/30 hover:border-amber-500/50 transition-all active:scale-[0.98]"
               >
                 <QrCode className="h-3.5 w-3.5 text-amber-400 shrink-0" />
                 <span className="truncate">Partilhar QR</span>
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
 

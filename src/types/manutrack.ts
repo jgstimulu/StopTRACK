@@ -136,6 +136,7 @@ export interface StoppageRecord {
 }
 
 export type AppPage =
+  | 'availability'
   | 'home'
   | 'select_machine'
   | 'timing'
