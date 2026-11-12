@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/utils/offlineOutbox.test.ts server/stoppageAuthorization.test.ts server/dailyMachinePlan.test.ts"
+    "test": "bun test src/utils/offlineOutbox.test.ts server/stoppageAuthorization.test.ts server/dailyMachinePlan.test.ts server/dailyMachineAvailability.test.ts server/supabaseAvailabilityStore.test.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

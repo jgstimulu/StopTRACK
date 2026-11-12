@@ -24,6 +24,13 @@ export interface Machine {
   section: string;
 }
 
+export type MachineAvailabilityStatus = 'Disponível' | 'Em manutenção' | 'Indisponível';
+
+export interface MachineAvailabilityState {
+  status: MachineAvailabilityStatus;
+  note: string;
+}
+
 export type StoppageStageLevel = 1 | 2 | 3;
 // 1 = Diagnóstico (Triagem inicial / Deteção de causa raiz)
 // 2 = Intervenção (Múltiplas etapas possíveis: Mecânica, Elétrica, Afinação, etc.)
