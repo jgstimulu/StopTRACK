@@ -188,7 +188,7 @@ export const PageHome: React.FC<PageHomeProps> = ({
               className="flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 py-2.5 px-3 text-xs font-semibold text-slate-200 hover:bg-slate-700/80 hover:text-white transition-all active:scale-[0.98]"
             >
               <BarChart3 className="h-4 w-4 text-emerald-400 shrink-0" />
-              <span className="truncate">Dashboard OEE</span>
+              <span className="truncate">Análise de Intervenções</span>
             </button>
           </div>
 

@@ -1170,7 +1170,7 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
           </button>
 
           <p className="mt-2 text-center text-[11px] text-slate-400">
-            O registo manual será guardado no histórico (com Turno {shift}) e computado nas métricas OEE.
+            O registo manual será guardado no histórico (com Turno {shift}) e incluído na análise de intervenções.
           </p>
         </div>
       </form>
