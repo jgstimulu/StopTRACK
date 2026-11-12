@@ -106,6 +106,19 @@ function createDefaultMachineAvailability(): Record<string, MachineAvailabilityS
   );
 }
 
+function createMachineAvailabilityFromPlan(machineIds: string[]): Record<string, MachineAvailabilityState> {
+  const plannedMachines = new Set(machineIds);
+  return Object.fromEntries(
+    MACHINES_DATA.map((machine) => [
+      machine.id,
+      {
+        status: plannedMachines.has(machine.code) ? 'Disponível' : 'Indisponível',
+        note: '',
+      },
+    ])
+  );
+}
+
 function readMachineAvailability(date: string): Record<string, MachineAvailabilityState> {
   try {
     const saved = localStorage.getItem(`${MACHINE_AVAILABILITY_KEY}_${date}`);
@@ -303,8 +316,14 @@ export default function App() {
           state.dailyMachineAvailability?.date === serverAvailabilityDate
             ? state.dailyMachineAvailability
             : null;
+        const plannedAvailability =
+          state.dailyMachinePlan.date === serverAvailabilityDate &&
+          state.dailyMachinePlan.machineIds.length > 0
+            ? createMachineAvailabilityFromPlan(state.dailyMachinePlan.machineIds)
+            : null;
         const nextAvailability =
           savedAvailability?.machines ??
+          plannedAvailability ??
           (previousAvailabilityDate === serverAvailabilityDate
             ? machineAvailabilityRef.current
             : createDefaultMachineAvailability());
