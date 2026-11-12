@@ -59,17 +59,12 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
   savedAt,
 }) => {
   const [selectedMachineId, setSelectedMachineId] = useState(machines[0]?.id ?? '');
-  const groupedByLine = {
-    'Linha 1': machines.filter((machine) => machine.section === 'Linha 1'),
-    'Linha 2': machines.filter((machine) => machine.section === 'Linha 2'),
-    'Linha 3': machines.filter((machine) => machine.section === 'Linha 3'),
-  };
   const selectedMachine = machines.find((machine) => machine.id === selectedMachineId);
   const selectedState = selectedMachine
-    ? availability[selectedMachine.id] ?? { status: 'Disponível' as const, note: '' }
+    ? availability[selectedMachine.id] ?? { status: 'Indisponível' as const, note: '' }
     : null;
   const availableCount = machines.filter(
-    (machine) => (availability[machine.id]?.status ?? 'Disponível') === 'Disponível'
+    (machine) => (availability[machine.id]?.status ?? 'Indisponível') === 'Disponível'
   ).length;
   const needsAttention = machines.length - availableCount;
 
@@ -78,7 +73,7 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
       <div className="mb-4 rounded-2xl border border-slate-700/80 bg-slate-900/95 p-3.5 shadow-md">
         <h1 className="text-xl font-black text-white">Disponibilidade do parque</h1>
         <p className="mt-1 text-xs text-slate-300">
-          Toque numa máquina para alterar o estado. A grelha fica editável durante todo o dia.
+          As máquinas começam paradas. Toque nas que vão trabalhar para as disponibilizar.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/60 px-2.5 py-1 text-[11px] font-bold text-emerald-200">
@@ -87,7 +82,7 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
           </span>
           <span className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/60 px-2.5 py-1 text-[11px] font-bold text-rose-200">
             <Lock className="h-3.5 w-3.5" />
-            {needsAttention} em alerta
+            {needsAttention} paradas
           </span>
           <span className="ml-auto text-[11px] font-medium text-slate-400">
             Registo diário · {formatAvailabilityDate(availabilityDate)}
@@ -96,45 +91,46 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
       </div>
 
       <div className="space-y-4 pb-24">
-        {Object.entries(groupedByLine).map(([lineName, lineMachines]) => (
-          <div key={lineName} className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-slate-300">{lineName}</h2>
-              <span className="text-[11px] text-slate-400">{lineMachines.length} máquinas</span>
-            </div>
-
-            <div className="grid grid-cols-5 gap-2 sm:gap-2.5">
-              {lineMachines.map((machine) => {
-                const state = availability[machine.id] ?? { status: 'Disponível', note: '' };
-                const style = STATUS_STYLES[state.status];
-                const Icon = style.icon;
-                const selected = selectedMachineId === machine.id;
-
-                return (
-                  <button
-                    key={machine.id}
-                    type="button"
-                    aria-label={`${machine.code}, ${style.label}. Toque para alterar o estado e editar observações.`}
-                    onClick={() => {
-                      setSelectedMachineId(machine.id);
-                      const currentIndex = statusOptions.indexOf(state.status);
-                      const nextStatus = statusOptions[(currentIndex + 1) % statusOptions.length];
-                      onChangeMachine(machine.id, { ...state, status: nextStatus });
-                    }}
-                    className={`relative flex min-h-[58px] flex-col items-center justify-center rounded-xl border-2 p-1.5 transition-all active:scale-[0.95] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${style.button} ${
-                      selected ? 'ring-2 ring-white/70 ring-offset-1 ring-offset-slate-950' : 'shadow-sm'
-                    }`}
-                  >
-                    <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-current opacity-80" aria-hidden="true" />
-                    <Icon className="mb-0.5 h-3.5 w-3.5" aria-hidden="true" />
-                    <span className="text-xs font-black tracking-tight">{machine.code}</span>
-                    <span className="mt-0.5 text-[8px] font-bold uppercase leading-tight">{style.shortLabel}</span>
-                  </button>
-                );
-              })}
-            </div>
+        <section aria-labelledby="machine-grid-heading" className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 id="machine-grid-heading" className="text-sm font-bold uppercase tracking-[0.15em] text-slate-300">
+              Todas as máquinas
+            </h2>
+            <span className="text-[11px] text-slate-400">{machines.length} máquinas</span>
           </div>
-        ))}
+
+          <div className="grid grid-cols-5 gap-2 sm:gap-2.5">
+            {machines.map((machine) => {
+              const state = availability[machine.id] ?? { status: 'Indisponível', note: '' };
+              const style = STATUS_STYLES[state.status];
+              const Icon = style.icon;
+              const selected = selectedMachineId === machine.id;
+
+              return (
+                <button
+                  key={machine.id}
+                  type="button"
+                  aria-label={`${machine.code}, ${style.label}. Toque para ${state.status === 'Disponível' ? 'parar' : 'disponibilizar'} a máquina e editar observações.`}
+                  onClick={() => {
+                    setSelectedMachineId(machine.id);
+                    onChangeMachine(machine.id, {
+                      ...state,
+                      status: state.status === 'Disponível' ? 'Indisponível' : 'Disponível',
+                    });
+                  }}
+                  className={`relative flex min-h-[58px] flex-col items-center justify-center rounded-xl border-2 p-1.5 transition-all active:scale-[0.95] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${style.button} ${
+                    selected ? 'ring-2 ring-white/70 ring-offset-1 ring-offset-slate-950' : 'shadow-sm'
+                  }`}
+                >
+                  <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-current opacity-80" aria-hidden="true" />
+                  <Icon className="mb-0.5 h-3.5 w-3.5" aria-hidden="true" />
+                  <span className="text-xs font-black tracking-tight">{machine.code}</span>
+                  <span className="mt-0.5 text-[8px] font-bold uppercase leading-tight">{style.shortLabel}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
 
         {selectedMachine && selectedState && (
           <section
@@ -146,7 +142,7 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
                 <h2 id="selected-machine-heading" className="text-sm font-bold text-white">
                   {selectedMachine.code} · {selectedMachine.name}
                 </h2>
-                <p className="mt-0.5 text-[11px] text-slate-400">{selectedMachine.section}</p>
+                <p className="mt-0.5 text-[11px] text-slate-400">{selectedMachine.name}</p>
               </div>
               <span className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[10px] font-bold ${STATUS_STYLES[selectedState.status].button}`}>
                 {React.createElement(STATUS_STYLES[selectedState.status].icon, { className: 'h-3.5 w-3.5' })}
