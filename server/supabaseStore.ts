@@ -256,6 +256,17 @@ export async function setDailyMachineAvailability(
   machines: Record<string, { status: 'Disponível' | 'Em manutenção' | 'Indisponível'; note: string }>
 ) {
   const savedAt = new Date().toISOString();
+  const plannedMachineIds = Object.entries(machines)
+    .filter(([, state]) => state.status === 'Disponível')
+    .map(([machineId]) => machineId)
+    .sort();
+  try {
+    await setSetting('daily_machine_plan', { date, machineIds: plannedMachineIds });
+  } catch (settingErr) {
+    console.warn('Erro ao guardar plano derivado da disponibilidade em app_settings:', settingErr);
+  }
+  await replaceDailyMachinePlanInTable(date, plannedMachineIds);
+
   const rows = Object.entries(machines).map(([machineId, state]) => ({
     availability_date: date,
     machine_id: machineId,
@@ -289,15 +300,26 @@ export async function getDailyMachinePlan(date: string): Promise<string[]> {
   // Fallback to app_settings
   try {
     const settingPlan = await getSetting<{ date?: string; machineIds?: string[] }>('daily_machine_plan');
-    if (settingPlan?.machineIds && Array.isArray(settingPlan.machineIds) && settingPlan.machineIds.length > 0) {
+    if (settingPlan?.date === date && Array.isArray(settingPlan.machineIds)) {
       return settingPlan.machineIds;
     }
   } catch {
     // ignore
   }
 
-  // Predefinição da fábrica: Todas as 30 máquinas disponíveis (F01 a F30)
-  return Array.from({ length: 30 }, (_, i) => `F${(i + 1).toString().padStart(2, '0')}`);
+  return [];
+}
+
+async function replaceDailyMachinePlanInTable(date: string, machineIds: string[]) {
+  const query = new URLSearchParams({ plan_date: `eq.${date}` });
+  await request(`/daily_machine_plan?${query}`, { method: 'DELETE' });
+  if (machineIds.length > 0) {
+    await request('/daily_machine_plan', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(machineIds.map((id) => ({ plan_date: date, machine_id: id }))),
+    });
+  }
 }
 
 export async function setDailyMachinePlanned(
@@ -351,15 +373,7 @@ export async function setAllDailyMachinesPlanned(
   }
 
   try {
-    const query = new URLSearchParams({ plan_date: `eq.${date}` });
-    await request(`/daily_machine_plan?${query}`, { method: 'DELETE' });
-    if (normalized.length > 0) {
-      await request('/daily_machine_plan', {
-        method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify(normalized.map((id) => ({ plan_date: date, machine_id: id }))),
-      });
-    }
+    await replaceDailyMachinePlanInTable(date, normalized);
   } catch (tableErr) {
     console.warn('Aviso não fatal ao gravar lote em daily_machine_plan:', tableErr);
   }
