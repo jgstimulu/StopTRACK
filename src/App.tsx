@@ -14,8 +14,9 @@ import {
   StoppageStage,
   StoppageStageLevel,
   StoppageTemplate,
+  MachineAvailabilityState,
 } from './types/manutrack';
-import { MachineAvailabilityState, PageAvailability } from './pages/PageAvailability';
+import { PageAvailability } from './pages/PageAvailability';
 import type { DailyMachinePlan } from './services/api';
 import {
   MACHINES_DATA,
@@ -55,6 +56,7 @@ import {
   apiOperatorLogout,
   apiSetDailyMachinePlanned,
   apiSetAllDailyMachinesPlanned,
+  apiSaveDailyMachineAvailability,
   ApiError,
   hasStoredSession,
   clearAdminToken,
@@ -86,11 +88,27 @@ import { AppLoginGate } from './components/AppLoginGate';
 import { Smartphone, Monitor, CheckCircle, Server, Settings2, QrCode, Cloud, RefreshCw, Activity, Layers, Wrench, LogOut } from 'lucide-react';
 
 const MACHINE_AVAILABILITY_KEY = 'manutrack_machine_availability_state';
-const MACHINE_AVAILABILITY_CONFIRMED_KEY = 'manutrack_machine_availability_confirmed';
 
-function readMachineAvailability(): Record<string, MachineAvailabilityState> {
+function getClientFactoryDate(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Lisbon',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function createDefaultMachineAvailability(): Record<string, MachineAvailabilityState> {
+  return Object.fromEntries(
+    MACHINES_DATA.map((machine) => [machine.id, { status: 'Disponível' as const, note: '' }])
+  );
+}
+
+function readMachineAvailability(date: string): Record<string, MachineAvailabilityState> {
   try {
-    const saved = localStorage.getItem(MACHINE_AVAILABILITY_KEY);
+    const saved = localStorage.getItem(`${MACHINE_AVAILABILITY_KEY}_${date}`);
     if (saved) {
       const parsed = JSON.parse(saved);
       if (parsed && typeof parsed === 'object') {
@@ -112,28 +130,25 @@ function readMachineAvailability(): Record<string, MachineAvailabilityState> {
     // Ignore parse errors
   }
 
-  return Object.fromEntries(
-    MACHINES_DATA.map((machine) => [machine.id, { status: 'Disponível' as const, note: '' }])
-  );
+  return createDefaultMachineAvailability();
 }
 
 export default function App() {
   // Navigation Page
-  const [currentPage, setCurrentPage] = useState<AppPage>(() => {
-    try {
-      return localStorage.getItem(MACHINE_AVAILABILITY_CONFIRMED_KEY) === 'true' ? 'home' : 'availability';
-    } catch {
-      return 'availability';
-    }
-  });
-  const [availabilityConfirmed, setAvailabilityConfirmed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(MACHINE_AVAILABILITY_CONFIRMED_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
-  const [machineAvailability, setMachineAvailability] = useState<Record<string, MachineAvailabilityState>>(readMachineAvailability);
+  const [currentPage, setCurrentPage] = useState<AppPage>('availability');
+  const [availabilityDate, setAvailabilityDate] = useState(getClientFactoryDate);
+  const availabilityDateRef = useRef(availabilityDate);
+  const availabilityInitializedRef = useRef(false);
+  const availabilityManuallyOpenedRef = useRef(false);
+  const [availabilityConfirmed, setAvailabilityConfirmed] = useState(false);
+  const [machineAvailability, setMachineAvailability] = useState<Record<string, MachineAvailabilityState>>(
+    () => readMachineAvailability(getClientFactoryDate())
+  );
+  const machineAvailabilityRef = useRef(machineAvailability);
+  machineAvailabilityRef.current = machineAvailability;
+  const [availabilitySavedAt, setAvailabilitySavedAt] = useState<string | null>(null);
+  const [isSavingAvailability, setIsSavingAvailability] = useState(false);
+  const [availabilitySaveError, setAvailabilitySaveError] = useState<string | null>(null);
 
   // Backend state: Operators and Stoppage Types
   const [operators, setOperators] = useState<Operator[]>([]);
@@ -275,6 +290,39 @@ export default function App() {
         setDailyMachinePlan(state.dailyMachinePlan);
       }
 
+      const serverAvailabilityDate = state.dailyMachinePlan.date;
+      if (
+        !availabilityInitializedRef.current ||
+        availabilityDateRef.current !== serverAvailabilityDate
+      ) {
+        const previousAvailabilityDate = availabilityDateRef.current;
+        const savedAvailability =
+          state.dailyMachineAvailability?.date === serverAvailabilityDate
+            ? state.dailyMachineAvailability
+            : null;
+        const nextAvailability =
+          savedAvailability?.machines ??
+          (previousAvailabilityDate === serverAvailabilityDate
+            ? machineAvailabilityRef.current
+            : createDefaultMachineAvailability());
+
+        availabilityDateRef.current = serverAvailabilityDate;
+        setAvailabilityDate(serverAvailabilityDate);
+        setMachineAvailability(nextAvailability);
+        setAvailabilityConfirmed(Boolean(savedAvailability));
+        setAvailabilitySavedAt(savedAvailability?.savedAt ?? null);
+        setAvailabilitySaveError(state.dailyMachineAvailabilityError ?? null);
+        if (previousAvailabilityDate !== serverAvailabilityDate) {
+          availabilityManuallyOpenedRef.current = false;
+        }
+        if (savedAvailability && !availabilityManuallyOpenedRef.current) {
+          setCurrentPage('home');
+        } else if (!savedAvailability) {
+          setCurrentPage('availability');
+        }
+        availabilityInitializedRef.current = true;
+      }
+
       // 1. Sync Operators with local merge (only trigger re-render if actually changed)
       if (Array.isArray(state.operators)) {
         setOperators((prev) => {
@@ -403,19 +451,11 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(MACHINE_AVAILABILITY_KEY, JSON.stringify(machineAvailability));
+      localStorage.setItem(`${MACHINE_AVAILABILITY_KEY}_${availabilityDate}`, JSON.stringify(machineAvailability));
     } catch {
       // Ignore storage errors
     }
-  }, [machineAvailability]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(MACHINE_AVAILABILITY_CONFIRMED_KEY, availabilityConfirmed ? 'true' : 'false');
-    } catch {
-      // Ignore storage errors
-    }
-  }, [availabilityConfirmed]);
+  }, [availabilityDate, machineAvailability]);
 
   // Toast auto-clear
   useEffect(() => {
@@ -532,20 +572,48 @@ export default function App() {
   };
 
   const handleOpenAvailability = () => {
+    availabilityManuallyOpenedRef.current = true;
     setCurrentPage('availability');
   };
 
-  const handleConfirmAvailability = () => {
-    setAvailabilityConfirmed(true);
-    setCurrentPage('home');
-    setToastMessage('Disponibilidade do parque confirmada. Pode avançar para o início de turno.');
+  const handleConfirmAvailability = async () => {
+    setIsSavingAvailability(true);
+    setAvailabilitySaveError(null);
+    try {
+      const saved = await apiSaveDailyMachineAvailability(machineAvailabilityRef.current);
+      availabilityDateRef.current = saved.date;
+      setAvailabilityDate(saved.date);
+      setMachineAvailability(saved.machines);
+      machineAvailabilityRef.current = saved.machines;
+      setAvailabilityConfirmed(true);
+      setAvailabilitySavedAt(saved.savedAt);
+      availabilityInitializedRef.current = true;
+      setCurrentPage('home');
+      availabilityManuallyOpenedRef.current = false;
+      setIsBackendConnected(true);
+      setToastMessage('Disponibilidade diária guardada no Supabase.');
+    } catch (error) {
+      setIsBackendConnected(false);
+      setAvailabilitySaveError(
+        error instanceof Error
+          ? `${error.message} As alterações continuam no dispositivo; tente guardar novamente.`
+          : 'Não foi possível guardar a disponibilidade no Supabase. Tente novamente.'
+      );
+    } finally {
+      setIsSavingAvailability(false);
+    }
   };
 
   const handleChangeMachineAvailability = (machineId: string, nextState: MachineAvailabilityState) => {
-    setMachineAvailability((prev) => ({
-      ...prev,
-      [machineId]: nextState,
-    }));
+    setMachineAvailability((prev) => {
+      const current = prev[machineId];
+      if (current?.status === nextState.status && current.note === nextState.note) return prev;
+      const next = { ...prev, [machineId]: nextState };
+      machineAvailabilityRef.current = next;
+      return next;
+    });
+    setAvailabilityConfirmed(false);
+    setAvailabilitySaveError(null);
   };
 
   // Page 1: Start Stoppage -> Page 2
@@ -1038,16 +1106,21 @@ export default function App() {
           </div>
         )}
 
-        {!availabilityConfirmed && (
+        {(currentPage === 'availability' || !availabilityConfirmed) && (
           <PageAvailability
             machines={MACHINES_DATA}
             availability={machineAvailability}
             onChangeMachine={handleChangeMachineAvailability}
             onConfirm={handleConfirmAvailability}
+            availabilityDate={availabilityDate}
+            isConfirmed={availabilityConfirmed}
+            isSaving={isSavingAvailability}
+            saveError={availabilitySaveError}
+            savedAt={availabilitySavedAt}
           />
         )}
 
-        {availabilityConfirmed && (
+        {availabilityConfirmed && currentPage !== 'availability' && (
           <Suspense
             fallback={
               <div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-400">

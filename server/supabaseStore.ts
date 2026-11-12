@@ -65,6 +65,13 @@ type DailyMachinePlanRow = {
   plan_date: string;
   machine_id: string;
 };
+type DailyMachineAvailabilityRow = {
+  availability_date: string;
+  machine_id: string;
+  status: 'Disponível' | 'Em manutenção' | 'Indisponível';
+  note: string;
+  updated_at: string;
+};
 type SessionRow = {
   token_hash: string;
   role: 'admin' | 'operator';
@@ -223,6 +230,45 @@ export async function getStoppageTypes() {
   return rows.map(({ id, name, color, description, active }) => ({
     id, name, color, description, active,
   }));
+}
+
+export async function getDailyMachineAvailability(date: string) {
+  const query = new URLSearchParams({
+    select: 'machine_id,status,note,updated_at',
+    availability_date: `eq.${date}`,
+    order: 'machine_id.asc',
+  });
+  const rows = await request<DailyMachineAvailabilityRow[]>(`/daily_machine_availability?${query}`);
+  if (!rows || rows.length !== 30) return null;
+
+  const machines = Object.fromEntries(
+    rows.map((row) => [row.machine_id, { status: row.status, note: row.note }])
+  );
+  const savedAt = rows.reduce(
+    (latest, row) => (row.updated_at > latest ? row.updated_at : latest),
+    rows[0].updated_at
+  );
+  return { date, machines, savedAt };
+}
+
+export async function setDailyMachineAvailability(
+  date: string,
+  machines: Record<string, { status: 'Disponível' | 'Em manutenção' | 'Indisponível'; note: string }>
+) {
+  const savedAt = new Date().toISOString();
+  const rows = Object.entries(machines).map(([machineId, state]) => ({
+    availability_date: date,
+    machine_id: machineId,
+    status: state.status,
+    note: state.note,
+    updated_at: savedAt,
+  }));
+  await request('/daily_machine_availability?on_conflict=availability_date,machine_id', {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(rows),
+  });
+  return { date, machines, savedAt };
 }
 
 export async function getDailyMachinePlan(date: string): Promise<string[]> {

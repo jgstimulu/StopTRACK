@@ -20,6 +20,7 @@ import {
   getFactoryDate,
   isValidMachineCode,
 } from './server/dailyMachinePlan';
+import { parseDailyMachineAvailability } from './server/dailyMachineAvailability';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -650,6 +651,15 @@ app.get('/api/state', requireSession, async (_req, res) => {
       supabaseStore.getStoppageTemplates(),
       supabaseStore.getDailyMachinePlan(planDate),
     ]);
+    let dailyMachineAvailability: Awaited<ReturnType<typeof supabaseStore.getDailyMachineAvailability>> = null;
+    let dailyMachineAvailabilityError: string | undefined;
+    try {
+      dailyMachineAvailability = await supabaseStore.getDailyMachineAvailability(planDate);
+    } catch (error) {
+      console.error('Não foi possível ler a disponibilidade diária no Supabase:', error);
+      dailyMachineAvailabilityError =
+        'Não foi possível carregar o registo diário. Confirme se a migração de disponibilidade foi aplicada no Supabase.';
+    }
     res.json({
       operators: publicOperators(operators),
       stoppageTypes,
@@ -657,6 +667,8 @@ app.get('/api/state', requireSession, async (_req, res) => {
       stoppages,
       stoppageTemplates,
       dailyMachinePlan: { date: planDate, machineIds: plannedMachineIds },
+      dailyMachineAvailability,
+      dailyMachineAvailabilityError,
       serverTime: Date.now(),
       updatedAt: Date.now(),
     });
@@ -691,6 +703,22 @@ app.put('/api/daily-machine-plan', requireAdminAuth, async (req, res) => {
     const planDate = getFactoryDate();
     await supabaseStore.setAllDailyMachinesPlanned(planDate, machineIds);
     res.json({ date: planDate, machineIds });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.put('/api/daily-machine-availability', requireSession, async (req, res) => {
+  const machines = parseDailyMachineAvailability(req.body?.machines);
+  if (!machines) {
+    return res.status(400).json({
+      error: 'Registe um estado válido para cada máquina (F01–F30). As observações podem ter até 500 caracteres.',
+    });
+  }
+
+  try {
+    const date = getFactoryDate();
+    res.json(await supabaseStore.setDailyMachineAvailability(date, machines));
   } catch (error) {
     return respondWithStoreError(res, error);
   }

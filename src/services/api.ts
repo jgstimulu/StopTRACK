@@ -1,4 +1,11 @@
-import { Operator, StoppageTypeItem, StoppageRecord, ActiveDowntime, StoppageTemplate } from '../types/manutrack';
+import {
+  Operator,
+  StoppageTypeItem,
+  StoppageRecord,
+  ActiveDowntime,
+  StoppageTemplate,
+  MachineAvailabilityState,
+} from '../types/manutrack';
 
 export interface SharedPlantState {
   operators: Operator[];
@@ -7,6 +14,8 @@ export interface SharedPlantState {
   activeDowntimes: ActiveDowntime[];
   stoppages: StoppageRecord[];
   dailyMachinePlan: DailyMachinePlan;
+  dailyMachineAvailability: DailyMachineAvailability | null;
+  dailyMachineAvailabilityError?: string;
   adminEmail?: string;
   serverTime: number;
   updatedAt: number;
@@ -15,6 +24,12 @@ export interface SharedPlantState {
 export interface DailyMachinePlan {
   date: string;
   machineIds: string[];
+}
+
+export interface DailyMachineAvailability {
+  date: string;
+  machines: Record<string, MachineAvailabilityState>;
+  savedAt: string;
 }
 
 
@@ -206,6 +221,24 @@ export async function fetchSharedState(): Promise<SharedPlantState> {
     }
   }
   throw lastError;
+}
+
+export async function apiSaveDailyMachineAvailability(
+  machines: Record<string, MachineAvailabilityState>
+): Promise<DailyMachineAvailability> {
+  const token = getAdminToken() || getOperatorToken();
+  if (!token) {
+    throw new ApiError('Sessão necessária para guardar a disponibilidade diária.', 401);
+  }
+  const res = await fetch('/api/daily-machine-availability', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ machines }),
+  });
+  if (!res.ok) {
+    throw await responseError(res, 'Falha ao guardar a disponibilidade diária no Supabase.');
+  }
+  return await res.json();
 }
 
 export async function apiStartActiveDowntime(downtime: ActiveDowntime): Promise<ActiveDowntime> {
