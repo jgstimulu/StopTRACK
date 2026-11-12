@@ -234,7 +234,7 @@ export const DeletePinModal: React.FC<DeletePinModalProps> = ({
             </div>
 
             <p className="text-[10px] text-center text-slate-400 pt-1">
-              PIN inicial predefinido: <strong className="text-slate-300 font-mono">2026</strong> (ou palavra-passe de admin)
+              Introduza o PIN de um operador autorizado (ou a palavra-passe de admin).
             </p>
 
             {/* Action Buttons */}

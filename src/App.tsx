@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import {
   AppPage,
   Machine,
@@ -16,6 +16,7 @@ import {
   StoppageTemplate,
 } from './types/manutrack';
 import { MachineAvailabilityState, PageAvailability } from './pages/PageAvailability';
+import type { DailyMachinePlan } from './services/api';
 import {
   MACHINES_DATA,
   INITIAL_STOPPAGE_TYPES,
@@ -26,9 +27,13 @@ import { formatTimeOnly, formatDatePt } from './utils/formatters';
 import { playIndustrialClick, playSuccessChime } from './utils/audio';
 import { getShiftInfo } from './utils/shift';
 import {
+  enqueuePendingStoppage,
+  readPendingStoppages,
+  removePendingStoppage,
+} from './utils/offlineOutbox';
+import {
   fetchSharedState,
   apiStartActiveDowntime,
-  apiCancelActiveDowntime,
   apiSaveStoppage,
   apiUpdateStoppage,
   apiDeleteStoppage,
@@ -45,20 +50,40 @@ import {
   apiDeleteStoppageTemplate,
   apiResetDefaults,
   apiOperatorLogin,
+  apiAdminLogin,
+  apiAdminLogout,
+  apiOperatorLogout,
+  apiSetDailyMachinePlanned,
+  apiSetAllDailyMachinesPlanned,
+  ApiError,
+  hasStoredSession,
+  clearAdminToken,
+  clearOperatorToken,
 } from './services/api';
 
 
-import { PageHome } from './pages/PageHome';
-import { PageSelectMachine } from './pages/PageSelectMachine';
-import { PageTimer } from './pages/PageTimer';
-import { PageCloseStoppage } from './pages/PageCloseStoppage';
-import { PageHistory } from './pages/PageHistory';
-import { PageDashboard } from './pages/PageDashboard';
-import { PageAdmin } from './pages/PageAdmin';
-import { PageActiveMonitoring } from './pages/PageActiveMonitoring';
-import { PageManualEntry } from './pages/PageManualEntry';
+const PageHome = lazy(() => import('./pages/PageHome').then((module) => ({ default: module.PageHome })));
+const PageSelectMachine = lazy(() =>
+  import('./pages/PageSelectMachine').then((module) => ({ default: module.PageSelectMachine }))
+);
+const PageTimer = lazy(() => import('./pages/PageTimer').then((module) => ({ default: module.PageTimer })));
+const PageCloseStoppage = lazy(() =>
+  import('./pages/PageCloseStoppage').then((module) => ({ default: module.PageCloseStoppage }))
+);
+const PageHistory = lazy(() => import('./pages/PageHistory').then((module) => ({ default: module.PageHistory })));
+const PageDashboard = lazy(() =>
+  import('./pages/PageDashboard').then((module) => ({ default: module.PageDashboard }))
+);
+const PageAdmin = lazy(() => import('./pages/PageAdmin').then((module) => ({ default: module.PageAdmin })));
+const PageActiveMonitoring = lazy(() =>
+  import('./pages/PageActiveMonitoring').then((module) => ({ default: module.PageActiveMonitoring }))
+);
+const PageManualEntry = lazy(() =>
+  import('./pages/PageManualEntry').then((module) => ({ default: module.PageManualEntry }))
+);
 import { ShareModal } from './components/ShareModal';
-import { Smartphone, Monitor, CheckCircle, Settings2, QrCode } from 'lucide-react';
+import { AppLoginGate } from './components/AppLoginGate';
+import { Smartphone, Monitor, CheckCircle, Server, Settings2, QrCode, Cloud, RefreshCw, Activity, Layers, Wrench, LogOut } from 'lucide-react';
 
 const MACHINE_AVAILABILITY_KEY = 'manutrack_machine_availability_state';
 const MACHINE_AVAILABILITY_CONFIRMED_KEY = 'manutrack_machine_availability_confirmed';
@@ -112,6 +137,10 @@ export default function App() {
 
   // Backend state: Operators and Stoppage Types
   const [operators, setOperators] = useState<Operator[]>([]);
+  const [dailyMachinePlan, setDailyMachinePlan] = useState<DailyMachinePlan>({
+    date: '',
+    machineIds: [],
+  });
 
   const [stoppageTypes, setStoppageTypes] = useState<StoppageTypeItem[]>(() => {
     try {
@@ -134,9 +163,13 @@ export default function App() {
   });
 
   const [isBackendConnected, setIsBackendConnected] = useState<boolean>(true);
+  const [requiresLogin, setRequiresLogin] = useState<boolean>(() => !hasStoredSession());
+  const [isBootstrapping, setIsBootstrapping] = useState<boolean>(() => hasStoredSession());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const cloudStateVersionRef = useRef(0);
+  const dailyMachinePlanVersionRef = useRef(0);
   const isSavingStoppageRef = useRef(false);
+  const isSyncInProgressRef = useRef(false);
 
   // Persistence: Active running downtimes
   const [activeDowntimes, setActiveDowntimes] = useState<ActiveDowntime[]>(() => {
@@ -158,15 +191,27 @@ export default function App() {
   // Persistence: Stoppage records history (Cleaned of any mock seed records)
   const [records, setRecords] = useState<StoppageRecord[]>(() => {
     try {
+      let pending = readPendingStoppages();
       const saved = localStorage.getItem('manutrack_stoppages_history');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed.filter((r) => r && r.id && !r.id.startsWith('seed-'));
+          const history = parsed.filter((r) => r && r.id && !r.id.startsWith('seed-'));
+          const queuedIds = new Set(pending.map((record) => record.id));
+          history
+            .filter((record) => record.pendingSync === true && !queuedIds.has(record.id))
+            .forEach((record) => {
+              pending = enqueuePendingStoppage(record);
+            });
+          return [
+            ...pending,
+            ...history.filter((record) => !pending.some((item) => item.id === record.id)),
+          ];
         }
       }
+      if (pending.length > 0) return pending;
     } catch {
-      // Ignore parse errors
+      console.warn('Não foi possível recuperar o histórico local de paragens.');
     }
     return INITIAL_STOPPAGES_SEED;
   });
@@ -183,16 +228,52 @@ export default function App() {
   // Notification Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  const clearSensitiveState = () => {
+    let pending: StoppageRecord[] = [];
+    let pendingReadable = true;
+    try {
+      pending = readPendingStoppages();
+    } catch (error) {
+      pendingReadable = false;
+      console.warn('Não foi possível ler a fila local de paragens antes de limpar a sessão.', error);
+    }
+    setOperators([]);
+    setDailyMachinePlan({ date: '', machineIds: [] });
+    setActiveDowntimes([]);
+    setRecords(pending);
+    setFocusedDowntime(null);
+    setStopEndTimestamp(0);
+    setCurrentOperator('');
+    try {
+      if (pendingReadable) {
+        localStorage.removeItem('manutrack_stoppages_history');
+        if (pending.length > 0) {
+          localStorage.setItem('manutrack_stoppages_history', JSON.stringify(pending));
+        }
+      }
+      localStorage.removeItem('manutrack_active_downtimes');
+      localStorage.removeItem('manutrack_operators_cache');
+    } catch {
+      // Storage unavailable
+    }
+  };
+
   // Periodic Cloud Sync Function with Bidirectional Resilience (Keep all devices aligned & never wipe data)
   const syncWithCloud = async () => {
-    if (isSavingStoppageRef.current) return;
+    if (isSavingStoppageRef.current || isSyncInProgressRef.current) return;
+    isSyncInProgressRef.current = true;
     const syncVersion = cloudStateVersionRef.current;
+    const dailyPlanVersion = dailyMachinePlanVersionRef.current;
 
     try {
       setIsSyncing(true);
       const state = await fetchSharedState();
       if (isSavingStoppageRef.current || syncVersion !== cloudStateVersionRef.current) return;
       setIsBackendConnected(true);
+
+      if (dailyPlanVersion === dailyMachinePlanVersionRef.current) {
+        setDailyMachinePlan(state.dailyMachinePlan);
+      }
 
       // 1. Sync Operators with local merge (only trigger re-render if actually changed)
       if (Array.isArray(state.operators)) {
@@ -236,29 +317,65 @@ export default function App() {
         }
       }
 
-      // 4. Sync Stoppages History (CRITICAL: Never overwrite with empty list!)
+      // 4. Sync Stoppages History (CRITICAL: Preservar registos locais pendentes de envio e sincronizar em segundo plano)
       if (Array.isArray(state.stoppages)) {
         const cleanServerStoppages = state.stoppages.filter(
           (r: any) => r && r.id && !r.id.startsWith('seed-')
         );
 
-        const mergedRecords = [...cleanServerStoppages].sort(
+        // Identificar registos locais pendentes que ainda não estejam na nuvem
+        const serverIds = new Set(cleanServerStoppages.map((record: StoppageRecord) => record.id));
+        const pendingRecords = readPendingStoppages();
+        pendingRecords
+          .filter((record) => serverIds.has(record.id))
+          .forEach((record) => removePendingStoppage(record.id));
+        const localPending = pendingRecords.filter((record) => !serverIds.has(record.id));
+
+        const mergedRecords = [...localPending, ...cleanServerStoppages].sort(
           (a, b) => (b.startTimestamp || b.createdAt || 0) - (a.startTimestamp || a.createdAt || 0)
         );
 
         setRecords(mergedRecords);
         localStorage.setItem('manutrack_stoppages_history', JSON.stringify(mergedRecords));
 
+        // Sincronização em segundo plano para paragens pendentes
+        if (localPending.length > 0) {
+          for (const pending of localPending) {
+            try {
+              const saved = await apiSaveStoppage(pending);
+              removePendingStoppage(pending.id);
+              setRecords((prev) => {
+                const next = prev.map((record) =>
+                  record.id === pending.id ? { ...saved, pendingSync: false } : record
+                );
+                localStorage.setItem('manutrack_stoppages_history', JSON.stringify(next));
+                return next;
+              });
+            } catch (syncErr) {
+              console.warn('Sincronização em segundo plano adiada para', pending.id, syncErr);
+            }
+          }
+        }
       }
-    } catch {
+    } catch (error) {
       setIsBackendConnected(false);
+      if (error instanceof ApiError && error.status === 401) {
+        clearAdminToken();
+        clearOperatorToken();
+        clearSensitiveState();
+        setRequiresLogin(true);
+      }
     } finally {
+      isSyncInProgressRef.current = false;
       setIsSyncing(false);
+      setIsBootstrapping(false);
     }
   };
 
   // The protected Express API is the single persistence path; reads are refreshed from it.
   useEffect(() => {
+    if (requiresLogin) return;
+
     localStorage.removeItem('manutrack_operators_cache');
     syncWithCloud();
 
@@ -273,7 +390,7 @@ export default function App() {
       clearInterval(interval);
       window.removeEventListener('focus', onFocus);
     };
-  }, []);
+  }, [requiresLogin]);
 
   // Sync current operator to localStorage
   useEffect(() => {
@@ -440,7 +557,25 @@ export default function App() {
     setCurrentPage('select_machine');
   };
 
-  // Page 2: Machine clicked -> immediately start downtime timer in cloud & go to Page 3
+  const handleSetDailyMachinePlanned = async (machine: Machine, planned: boolean) => {
+    const result = await apiSetDailyMachinePlanned(machine.code, planned);
+    dailyMachinePlanVersionRef.current += 1;
+    setDailyMachinePlan((current) => {
+      const currentIds = result.date === current.date ? current.machineIds : [];
+      const machineIds = new Set(currentIds);
+      if (result.planned) machineIds.add(result.machineId);
+      else machineIds.delete(result.machineId);
+      return { date: result.date, machineIds: [...machineIds].sort() };
+    });
+  };
+
+  const handleSetAllDailyMachinesPlanned = async (machineIds: string[]) => {
+    const result = await apiSetAllDailyMachinesPlanned(machineIds);
+    dailyMachinePlanVersionRef.current += 1;
+    setDailyMachinePlan({ date: result.date, machineIds: result.machineIds });
+  };
+
+  // Page 2: A planned machine starts its downtime timer in the cloud & opens Page 3
   const handleSelectMachine = async (
     machine: Machine,
     operator: string,
@@ -525,29 +660,47 @@ export default function App() {
   };
 
   // Page 4: "Gravar e sair" clicked -> save record to cloud database & clear machine status
-  const handleSaveAndExit = async (newRecord: StoppageRecord) => {
+  const handleSaveAndExit = async (newRecord: StoppageRecord, authorizationPin?: string) => {
     isSavingStoppageRef.current = true;
     cloudStateVersionRef.current += 1;
-    try {
-      await apiSaveStoppage(newRecord);
-      // Explicitly delete from active downtimes on the server
-      await apiCancelActiveDowntime(newRecord.machineId).catch(() => {});
 
-      const cleanMachineId = newRecord.machineId.trim().toUpperCase();
-      const updatedRecords = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
-      const remainingActive = activeDowntimes.filter(
-        (downtime) => downtime.machineId.trim().toUpperCase() !== cleanMachineId
-      );
-      setRecords(updatedRecords);
-      setActiveDowntimes(remainingActive);
-      setFocusedDowntime(null);
-      setStopEndTimestamp(0);
-      localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updatedRecords));
-      localStorage.setItem('manutrack_active_downtimes', JSON.stringify(remainingActive));
-      setToastMessage(`Paragem da ${newRecord.machineId} registada com sucesso (${newRecord.durationFormatted})!`);
-      setCurrentPage('home');
+    // 1. Salvaguarda imediata no dispositivo com pendingSync (o registo NUNCA se perde)
+    const cleanMachineId = newRecord.machineId.trim().toUpperCase();
+    const pendingRecord: StoppageRecord = { ...newRecord, pendingSync: true };
+    const pendingRecords = enqueuePendingStoppage(pendingRecord);
+    const localRecords = [
+      ...pendingRecords,
+      ...records.filter((record) =>
+        record.id !== newRecord.id && !pendingRecords.some((pending) => pending.id === record.id)
+      ),
+    ];
+    const remainingActive = activeDowntimes.filter(
+      (downtime) => downtime.machineId.trim().toUpperCase() !== cleanMachineId
+    );
+
+    setRecords(localRecords);
+    setActiveDowntimes(remainingActive);
+    setFocusedDowntime(null);
+    setStopEndTimestamp(0);
+    localStorage.setItem('manutrack_stoppages_history', JSON.stringify(localRecords));
+    localStorage.setItem('manutrack_active_downtimes', JSON.stringify(remainingActive));
+
+    // 2. Tentar gravação na nuvem central
+    try {
+      await apiSaveStoppage(newRecord, true, authorizationPin);
+      removePendingStoppage(newRecord.id);
+
+      const syncedRecord: StoppageRecord = { ...newRecord, pendingSync: false };
+      const syncedList = [syncedRecord, ...records.filter((record) => record.id !== newRecord.id)];
+      setRecords(syncedList);
+      localStorage.setItem('manutrack_stoppages_history', JSON.stringify(syncedList));
+      setToastMessage(`Paragem da ${newRecord.machineId} registada com sucesso na nuvem (${newRecord.durationFormatted})!`);
+    } catch (error) {
+      console.warn('Gravação na nuvem falhou ou offline; mantida localmente para sincronização:', error);
+      setToastMessage(`Paragem da ${newRecord.machineId} guardada no dispositivo! A sincronização será concluída em segundo plano.`);
     } finally {
       isSavingStoppageRef.current = false;
+      setCurrentPage('home');
     }
   };
 
@@ -602,13 +755,43 @@ export default function App() {
 
   // Handler for manual retrospective stoppage entry
   const handleSaveManualRecord = async (newRecord: StoppageRecord, operatorId: string, pin: string) => {
-    await apiOperatorLogin(operatorId, pin);
-    await apiSaveStoppage(newRecord, true);
-    const updated = [newRecord, ...records.filter((record) => record.id !== newRecord.id)];
-    setRecords(updated);
-    localStorage.setItem('manutrack_stoppages_history', JSON.stringify(updated));
-    setToastMessage(`Paragem da ${newRecord.machineId} inserida manualmente com sucesso!`);
-    setCurrentPage('history');
+    isSavingStoppageRef.current = true;
+    cloudStateVersionRef.current += 1;
+
+    // 1. Salvaguarda imediata no dispositivo com pendingSync
+    const pendingRecord: StoppageRecord = { ...newRecord, pendingSync: true };
+    const pendingRecords = enqueuePendingStoppage(pendingRecord);
+    const localRecords = [
+      ...pendingRecords,
+      ...records.filter((record) =>
+        record.id !== newRecord.id && !pendingRecords.some((pending) => pending.id === record.id)
+      ),
+    ];
+    setRecords(localRecords);
+    localStorage.setItem('manutrack_stoppages_history', JSON.stringify(localRecords));
+
+    // 2. Tentar gravação na nuvem central
+    try {
+      try {
+        await apiOperatorLogin(operatorId, pin);
+      } catch (loginErr) {
+        console.warn('Operator session login warning, proceeding with direct PIN verification:', loginErr);
+      }
+      await apiSaveStoppage(newRecord, true, pin);
+      removePendingStoppage(newRecord.id);
+
+      const syncedRecord: StoppageRecord = { ...newRecord, pendingSync: false };
+      const syncedList = [syncedRecord, ...records.filter((record) => record.id !== newRecord.id)];
+      setRecords(syncedList);
+      localStorage.setItem('manutrack_stoppages_history', JSON.stringify(syncedList));
+      setToastMessage(`Paragem da ${newRecord.machineId} inserida manualmente com sucesso!`);
+    } catch (error) {
+      console.warn('Gravação manual na nuvem adiada para sincronização em segundo plano:', error);
+      setToastMessage(`Paragem da ${newRecord.machineId} guardada no dispositivo! A sincronização será concluída em segundo plano.`);
+    } finally {
+      isSavingStoppageRef.current = false;
+      setCurrentPage('history');
+    }
   };
 
   // Handler to update active downtime details (e.g. assigned technician, stage)
@@ -630,11 +813,65 @@ export default function App() {
     setCurrentPage('timing');
   };
 
-  // Exit button on Page 1 or Page 2
-  const handleExitApp = () => {
-    setCurrentPage(availabilityConfirmed ? 'home' : 'availability');
-    setToastMessage('Sessão StopTRACK em espera.');
+  // Ends the current session and returns to the login screen.
+  const handleLogout = async () => {
+    // Start the server-side logout while the tokens still exist.
+    const logoutRequests = [apiAdminLogout(), apiOperatorLogout()];
+
+    // Clear the local session immediately so the UI never waits on the network.
+    clearAdminToken();
+    clearOperatorToken();
+    clearSensitiveState();
+    setRequiresLogin(true);
+    setCurrentPage('home');
+    setStoppageTypes(INITIAL_STOPPAGE_TYPES);
+    setStoppageTemplates(INITIAL_STOPPAGE_TEMPLATES);
+    localStorage.removeItem('manutrack_stoppage_types_cache');
+    localStorage.removeItem('manutrack_stoppage_templates_cache');
+
+    await Promise.allSettled(logoutRequests);
   };
+
+  const handleOperatorAppLogin = async (operatorId: string, pin: string) => {
+    await apiOperatorLogin(operatorId, pin);
+    clearSensitiveState();
+    setIsBootstrapping(true);
+    setRequiresLogin(false);
+  };
+
+  const handleAdminAppLogin = async (email: string, password: string) => {
+    await apiAdminLogin(email, password);
+    clearSensitiveState();
+    setIsBootstrapping(true);
+    setRequiresLogin(false);
+  };
+
+  // The home screen "Sair" button ends the session.
+  const handleExitApp = () => {
+    void handleLogout();
+  };
+
+  if (isBootstrapping) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-300 antialiased">
+        <div className="flex flex-col items-center gap-3">
+          <RefreshCw className="h-8 w-8 animate-spin text-amber-400" />
+          <p className="text-xs font-semibold uppercase tracking-wider">A validar sessão...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (requiresLogin) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-start bg-slate-950 text-slate-100 antialiased selection:bg-amber-500 selection:text-slate-950">
+        <AppLoginGate
+          onOperatorLogin={handleOperatorAppLogin}
+          onAdminLogin={handleAdminAppLogin}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-start antialiased selection:bg-amber-500 selection:text-slate-950">
@@ -689,6 +926,20 @@ export default function App() {
           >
             <Settings2 className="h-3.5 w-3.5 text-amber-400" />
             <span>Backend</span>
+          </button>
+
+          {/* End the current operator/admin session */}
+          <button
+            type="button"
+            onClick={() => {
+              playIndustrialClick();
+              void handleLogout();
+            }}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-slate-300 hover:border-rose-500/60 hover:bg-rose-950/40 hover:text-white transition-colors"
+            title="Terminar sessão"
+          >
+            <LogOut className="h-3.5 w-3.5 text-rose-400" />
+            <span className="hidden sm:inline">Sair</span>
           </button>
 
           {/* Mobile frame toggle for desktop testing */}
@@ -787,7 +1038,7 @@ export default function App() {
           </div>
         )}
 
-        {!availabilityConfirmed && currentPage === 'availability' && (
+        {!availabilityConfirmed && (
           <PageAvailability
             machines={MACHINES_DATA}
             availability={machineAvailability}
@@ -796,181 +1047,176 @@ export default function App() {
           />
         )}
 
-        {!availabilityConfirmed && currentPage !== 'availability' && (
-          <PageAvailability
-            machines={MACHINES_DATA}
-            availability={machineAvailability}
-            onChangeMachine={handleChangeMachineAvailability}
-            onConfirm={handleConfirmAvailability}
-          />
-        )}
+        {availabilityConfirmed && (
+          <Suspense
+            fallback={
+              <div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-400">
+                A carregar...
+              </div>
+            }
+          >
+            {currentPage === 'home' && (
+              <PageHome
+                onStartStoppage={handleStartStoppageFromHome}
+                onExit={handleExitApp}
+                activeDowntimes={activeDowntimes}
+                onOpenActiveTimer={handleOpenActiveTimer}
+                onOpenActiveMonitoring={() => setCurrentPage('active_monitoring')}
+                onOpenManualEntry={() => setCurrentPage('manual_entry')}
+                onOpenHistory={() => setCurrentPage('history')}
+                onOpenDashboard={() => setCurrentPage('dashboard')}
+                onOpenAdmin={() => setCurrentPage('admin')}
+                onOpenAvailability={handleOpenAvailability}
+                onOpenShare={() => setIsShareModalOpen(true)}
+                totalSavedRecords={records.length}
+              />
+            )}
 
-        {/* SCREEN 1: Página 1 (Início - Logotipo, Iniciar Paragem, Sair) */}
-        {availabilityConfirmed && currentPage === 'home' && (
-          <PageHome
-            onStartStoppage={handleStartStoppageFromHome}
-            onExit={handleExitApp}
-            activeDowntimes={activeDowntimes}
-            onOpenActiveTimer={handleOpenActiveTimer}
-            onOpenActiveMonitoring={() => setCurrentPage('active_monitoring')}
-            onOpenManualEntry={() => setCurrentPage('manual_entry')}
-            onOpenHistory={() => setCurrentPage('history')}
-            onOpenDashboard={() => setCurrentPage('dashboard')}
-            onOpenAdmin={() => setCurrentPage('admin')}
-            onOpenAvailability={handleOpenAvailability}
-            onOpenShare={() => setIsShareModalOpen(true)}
-            totalSavedRecords={records.length}
-          />
-        )}
+            {currentPage === 'select_machine' && (
+              <PageSelectMachine
+                onSelectMachine={handleSelectMachine}
+                onExit={() => setCurrentPage('home')}
+                activeDowntimes={activeDowntimes}
+                onOpenActiveTimer={handleOpenActiveTimer}
+                currentOperator={currentOperator}
+                onSetOperator={setCurrentOperator}
+                availableOperators={operators}
+                onOpenAdmin={() => setCurrentPage('admin')}
+                dailyMachinePlan={dailyMachinePlan}
+              />
+            )}
 
-        {/* SCREEN 2: Página 2 (Quem Inicia & Seleção de Máquina F01–F30) */}
-        {availabilityConfirmed && currentPage === 'select_machine' && (
-          <PageSelectMachine
-            onSelectMachine={handleSelectMachine}
-            onExit={() => setCurrentPage('home')}
-            activeDowntimes={activeDowntimes}
-            onOpenActiveTimer={handleOpenActiveTimer}
-            currentOperator={currentOperator}
-            onSetOperator={setCurrentOperator}
-            availableOperators={operators}
-            onOpenAdmin={() => setCurrentPage('admin')}
-          />
-        )}
+            {currentPage === 'timing' && (
+              (focusedDowntime || (activeDowntimes.length > 0 ? activeDowntimes[0] : null)) ? (
+                <PageTimer
+                  activeDowntime={focusedDowntime || activeDowntimes[0]}
+                  onStopCounting={handleStopCounting}
+                  onBackToHome={() => setCurrentPage('home')}
+                  allActiveDowntimes={activeDowntimes}
+                  onSwitchDowntime={handleSwitchActiveDowntime}
+                  onOpenMonitoring={() => setCurrentPage('active_monitoring')}
+                  onAddNewStoppage={() => setCurrentPage('select_machine')}
+                  availableOperators={operators}
+                  availableStoppageTypes={stoppageTypes}
+                  onTransitionStage={handleTransitionStage}
+                />
+              ) : (
+                <div className="flex min-h-[50vh] flex-col items-center justify-center p-8 text-center text-slate-300">
+                  <p className="text-sm font-bold text-amber-400 mb-3">Nenhuma paragem ativa selecionada</p>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage('home')}
+                    className="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider"
+                  >
+                    Voltar ao Início
+                  </button>
+                </div>
+              )
+            )}
 
-        {/* SCREEN 3: Página 3 (Cronómetro / Relógio da Paragem com botão Parar contagem) */}
-        {availabilityConfirmed && currentPage === 'timing' && (
-          (focusedDowntime || (activeDowntimes.length > 0 ? activeDowntimes[0] : null)) ? (
-            <PageTimer
-              activeDowntime={focusedDowntime || activeDowntimes[0]}
-              onStopCounting={handleStopCounting}
-              onBackToHome={() => setCurrentPage('home')}
-              allActiveDowntimes={activeDowntimes}
-              onSwitchDowntime={handleSwitchActiveDowntime}
-              onOpenMonitoring={() => setCurrentPage('active_monitoring')}
-              onAddNewStoppage={() => setCurrentPage('select_machine')}
-              availableOperators={operators}
-              availableStoppageTypes={stoppageTypes}
-              onTransitionStage={handleTransitionStage}
-            />
-          ) : (
-            <div className="flex min-h-[50vh] flex-col items-center justify-center p-8 text-center text-slate-300">
-              <p className="text-sm font-bold text-amber-400 mb-3">Nenhuma paragem ativa selecionada</p>
-              <button
-                type="button"
-                onClick={() => setCurrentPage('home')}
-                className="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider"
-              >
-                Voltar ao Início
-              </button>
-            </div>
-          )
-        )}
+            {currentPage === 'close_form' && (
+              (focusedDowntime || (activeDowntimes.length > 0 ? activeDowntimes[0] : null)) ? (
+                <PageCloseStoppage
+                  activeDowntime={focusedDowntime || activeDowntimes[0]}
+                  endTimestamp={stopEndTimestamp || Date.now()}
+                  onSaveAndExit={handleSaveAndExit}
+                  onCancel={() => {
+                    if (activeDowntimes.length > 1) {
+                      setCurrentPage('active_monitoring');
+                    } else if (focusedDowntime || activeDowntimes.length > 0) {
+                      setCurrentPage('timing');
+                    } else {
+                      setCurrentPage('home');
+                    }
+                  }}
+                  availableOperators={operators}
+                  availableStoppageTypes={stoppageTypes}
+                  availableTemplates={stoppageTemplates}
+                  onOpenAdmin={() => setCurrentPage('admin')}
+                />
+              ) : (
+                <div className="flex min-h-[50vh] flex-col items-center justify-center p-8 text-center text-slate-300">
+                  <p className="text-sm font-bold text-amber-400 mb-3">Não existe paragem em curso para encerrar</p>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage('home')}
+                    className="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider"
+                  >
+                    Voltar ao Início
+                  </button>
+                </div>
+              )
+            )}
 
-        {/* SCREEN 4: Página 4 (Resumo topo + Formulário com Quem iniciou, Quem fechou, Tipo, Descrição, O que foi feito + Gravar e Sair) */}
-        {availabilityConfirmed && currentPage === 'close_form' && (
-          (focusedDowntime || (activeDowntimes.length > 0 ? activeDowntimes[0] : null)) ? (
-            <PageCloseStoppage
-              activeDowntime={focusedDowntime || activeDowntimes[0]}
-              endTimestamp={stopEndTimestamp || Date.now()}
-              onSaveAndExit={handleSaveAndExit}
-              onCancel={() => {
-                if (activeDowntimes.length > 1) {
-                  setCurrentPage('active_monitoring');
-                } else if (focusedDowntime || activeDowntimes.length > 0) {
-                  setCurrentPage('timing');
-                } else {
-                  setCurrentPage('home');
-                }
-              }}
-              availableOperators={operators}
-              availableStoppageTypes={stoppageTypes}
-              availableTemplates={stoppageTemplates}
-              onOpenAdmin={() => setCurrentPage('admin')}
-            />
-          ) : (
-            <div className="flex min-h-[50vh] flex-col items-center justify-center p-8 text-center text-slate-300">
-              <p className="text-sm font-bold text-amber-400 mb-3">Não existe paragem em curso para encerrar</p>
-              <button
-                type="button"
-                onClick={() => setCurrentPage('home')}
-                className="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider"
-              >
-                Voltar ao Início
-              </button>
-            </div>
-          )
-        )}
+            {currentPage === 'active_monitoring' && (
+              <PageActiveMonitoring
+                activeDowntimes={activeDowntimes}
+                onOpenTimer={handleOpenActiveTimer}
+                onStopCounting={handleStopCounting}
+                onStartNewStoppage={() => setCurrentPage('select_machine')}
+                onBackToHome={() => setCurrentPage('home')}
+                availableOperators={operators}
+                availableStoppageTypes={stoppageTypes}
+                onUpdateActiveDowntime={handleUpdateActiveDowntime}
+                onTransitionStage={handleTransitionStage}
+              />
+            )}
 
-        {/* SCREEN 5: Painel de Controlo / Cronómetros Ativos em Paralelo */}
-        {availabilityConfirmed && currentPage === 'active_monitoring' && (
-          <PageActiveMonitoring
-            activeDowntimes={activeDowntimes}
-            onOpenTimer={handleOpenActiveTimer}
-            onStopCounting={handleStopCounting}
-            onStartNewStoppage={() => setCurrentPage('select_machine')}
-            onBackToHome={() => setCurrentPage('home')}
-            availableOperators={operators}
-            availableStoppageTypes={stoppageTypes}
-            onUpdateActiveDowntime={handleUpdateActiveDowntime}
-            onTransitionStage={handleTransitionStage}
-          />
-        )}
+            {currentPage === 'manual_entry' && (
+              <PageManualEntry
+                onSaveRecord={handleSaveManualRecord}
+                onBack={() => setCurrentPage('home')}
+                availableOperators={operators}
+                availableStoppageTypes={stoppageTypes}
+                availableTemplates={stoppageTemplates}
+              />
+            )}
 
-        {/* SCREEN 6: Registo Manual de Paragens Retroativas */}
-        {availabilityConfirmed && currentPage === 'manual_entry' && (
-          <PageManualEntry
-            onSaveRecord={handleSaveManualRecord}
-            onBack={() => setCurrentPage('home')}
-            availableOperators={operators}
-            availableStoppageTypes={stoppageTypes}
-            availableTemplates={stoppageTemplates}
-          />
-        )}
+            {currentPage === 'history' && (
+              <PageHistory
+                records={records}
+                onBackToHome={() => setCurrentPage('home')}
+                onDeleteRecord={handleDeleteRecord}
+                onUpdateRecord={handleUpdateRecord}
+                onOpenManualEntry={() => setCurrentPage('manual_entry')}
+                availableOperators={operators}
+                availableStoppageTypes={stoppageTypes}
+                availableTemplates={stoppageTemplates}
+              />
+            )}
 
-        {/* Extra View: Histórico de Paragens */}
-        {availabilityConfirmed && currentPage === 'history' && (
-          <PageHistory
-            records={records}
-            onBackToHome={() => setCurrentPage('home')}
-            onDeleteRecord={handleDeleteRecord}
-            onUpdateRecord={handleUpdateRecord}
-            onOpenManualEntry={() => setCurrentPage('manual_entry')}
-            availableOperators={operators}
-            availableStoppageTypes={stoppageTypes}
-            availableTemplates={stoppageTemplates}
-          />
-        )}
+            {currentPage === 'dashboard' && (
+              <PageDashboard
+                records={records}
+                onBackToHome={() => setCurrentPage('home')}
+              />
+            )}
 
-        {/* Extra View: Dashboard & KPIs */}
-        {availabilityConfirmed && currentPage === 'dashboard' && (
-          <PageDashboard
-            records={records}
-            onBackToHome={() => setCurrentPage('home')}
-          />
+            {currentPage === 'admin' && (
+              <PageAdmin
+                operators={operators}
+                stoppageTypes={stoppageTypes}
+                stoppageTemplates={stoppageTemplates}
+                stoppageRecords={records}
+                dailyMachinePlan={dailyMachinePlan}
+                onSetDailyMachinePlanned={handleSetDailyMachinePlanned}
+                onSetAllDailyMachinesPlanned={handleSetAllDailyMachinesPlanned}
+                onAddOperator={handleAddOperator}
+                onUpdateOperator={handleUpdateOperator}
+                onDeleteOperator={handleDeleteOperator}
+                onAddStoppageType={handleAddStoppageType}
+                onUpdateStoppageType={handleUpdateStoppageType}
+                onDeleteStoppageType={handleDeleteStoppageType}
+                onAddStoppageTemplate={handleAddStoppageTemplate}
+                onUpdateStoppageTemplate={handleUpdateStoppageTemplate}
+                onDeleteStoppageTemplate={handleDeleteStoppageTemplate}
+                onResetDefaults={handleResetDefaults}
+                onBatchImportStoppages={handleBatchImportStoppages}
+                onBackToHome={() => setCurrentPage('home')}
+              />
+            )}
+          </Suspense>
         )}
-
-        {/* BACKEND MANAGEMENT VIEW: Gestão de Pessoal, Tipos de Avaria, Modelos e Importação CSV */}
-        {availabilityConfirmed && currentPage === 'admin' && (
-          <PageAdmin
-            operators={operators}
-            stoppageTypes={stoppageTypes}
-            stoppageTemplates={stoppageTemplates}
-            stoppageRecords={records}
-            onAddOperator={handleAddOperator}
-            onUpdateOperator={handleUpdateOperator}
-            onDeleteOperator={handleDeleteOperator}
-            onAddStoppageType={handleAddStoppageType}
-            onUpdateStoppageType={handleUpdateStoppageType}
-            onDeleteStoppageType={handleDeleteStoppageType}
-            onAddStoppageTemplate={handleAddStoppageTemplate}
-            onUpdateStoppageTemplate={handleUpdateStoppageTemplate}
-            onDeleteStoppageTemplate={handleDeleteStoppageTemplate}
-            onResetDefaults={handleResetDefaults}
-            onBatchImportStoppages={handleBatchImportStoppages}
-            onBackToHome={() => setCurrentPage('home')}
-          />
-        )}
-
       </main>
 
       {/* QR Code and Mobile Share Modal */}

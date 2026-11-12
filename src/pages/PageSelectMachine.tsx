@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, LogOut, ArrowLeft, Clock, AlertCircle } from 'lucide-react';
+import { User, LogOut, ArrowLeft, Clock, AlertCircle, Lock } from 'lucide-react';
 import { HeaderLogo } from '../components/HeaderLogo';
 import { Machine, ActiveDowntime, Operator } from '../types/manutrack';
 import { MACHINES_DATA } from '../data/initialData';
@@ -15,6 +15,7 @@ interface PageSelectMachineProps {
   onSetOperator: (name: string) => void;
   availableOperators?: Operator[];
   onOpenAdmin?: () => void;
+  dailyMachinePlan: { date: string; machineIds: string[] };
 }
 
 export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
@@ -26,11 +27,13 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
   onSetOperator,
   availableOperators = [],
   onOpenAdmin,
+  dailyMachinePlan,
 }) => {
   const [selectedOperatorId, setSelectedOperatorId] = useState('');
   const [operatorPin, setOperatorPin] = useState('');
   const [isStarting, setIsStarting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [machineStatusNotice, setMachineStatusNotice] = useState<string | null>(null);
 
   // Automatically calculated industrial shift based on current time:
   // 05:00 - 14:30 -> 1º Turno | 14:30 - 00:00 -> 2º Turno | 00:00 - 05:00 -> Turno Noturno
@@ -45,31 +48,42 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
 
   const handleMachineClick = async (machine: Machine) => {
     playIndustrialClick();
+    setMachineStatusNotice(null);
     const existing = activeMap.get(machine.code);
+    const isPlanned = dailyMachinePlan.machineIds.includes(machine.code);
+
     if (existing) {
       // Machine already has an active downtime running -> allow inspecting timer
       onOpenActiveTimer(existing);
-    } else {
-      // Starting a new stoppage -> operator MUST be selected
-      if (!currentOperator || !currentOperator.trim()) {
-        setValidationError('Seleção obrigatória: Escolha quem inicia a paragem antes de clicar na máquina.');
-        return;
-      }
-      const operator = startAuthorized.find((entry) => entry.id === selectedOperatorId);
-      if (!operator || !operatorPin) {
-        setValidationError('Selecione o operador e introduza o seu PIN individual.');
-        return;
-      }
-      setValidationError(null);
-      setIsStarting(true);
-      try {
-        await onSelectMachine(machine, currentOperator.trim(), currentShift.name, operator.id, operatorPin);
-        setOperatorPin('');
-      } catch (error) {
-        setValidationError(error instanceof Error ? error.message : 'Não foi possível iniciar a paragem.');
-      } finally {
-        setIsStarting(false);
-      }
+      return;
+    }
+
+    if (!isPlanned) {
+      setMachineStatusNotice(
+        `A Máquina ${machine.code} encontra-se parada pela Administração (aguarda decisão se será recuperada). Apenas o Administrador pode disponibilizar esta máquina no menu de Administração.`
+      );
+      return;
+    }
+
+    // Starting a new stoppage -> operator MUST be selected
+    if (!currentOperator || !currentOperator.trim()) {
+      setValidationError('Seleção obrigatória: Escolha quem inicia a paragem antes de clicar na máquina.');
+      return;
+    }
+    const operator = startAuthorized.find((entry) => entry.id === selectedOperatorId);
+    if (!operator || !operatorPin) {
+      setValidationError('Selecione o operador e introduza o seu PIN individual.');
+      return;
+    }
+    setValidationError(null);
+    setIsStarting(true);
+    try {
+      await onSelectMachine(machine, currentOperator.trim(), currentShift.name, operator.id, operatorPin);
+      setOperatorPin('');
+    } catch (error) {
+      setValidationError(error instanceof Error ? error.message : 'Não foi possível iniciar a paragem.');
+    } finally {
+      setIsStarting(false);
     }
   };
 
@@ -182,17 +196,64 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
             </div>
         </div>
 
-        {/* Instructions banner */}
-        <div className="mt-3 flex items-center justify-between text-xs px-1 text-slate-400">
-          <span>Selecione a máquina (F01–F30):</span>
-          <div className="flex items-center gap-3 text-[11px]">
+        <div className="mt-3 rounded-xl border border-slate-700/80 bg-slate-900/90 px-3.5 py-3 shadow-md">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-200">
+                  Disponibilidade do Parque de Máquinas (F01–F30)
+                </p>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                  Apenas Leitura
+                </span>
+              </div>
+              <p className="mt-0.5 text-[10px] text-slate-400">
+                Máquinas antigas com fornecedor extinto. O estado de disponibilidade é definido pela Administração.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/60 px-2.5 py-1 text-[11px] font-bold text-emerald-300 font-mono">
+                <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
+                {dailyMachinePlan.machineIds.length} Disponíveis (A trabalhar)
+              </span>
+              {MACHINES_DATA.length - dailyMachinePlan.machineIds.length > 0 && (
+                <span className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/60 px-2.5 py-1 text-[11px] font-bold text-rose-300 font-mono">
+                  <Lock className="h-3 w-3 text-rose-400" />
+                  {MACHINES_DATA.length - dailyMachinePlan.machineIds.length} Paradas (Aguarda Decisão)
+                </span>
+              )}
+            </div>
+          </div>
+
+          {machineStatusNotice && (
+            <div className="mt-2.5 rounded-lg border border-rose-500/60 bg-rose-950/80 p-2.5 text-xs text-rose-200 flex items-start gap-2 shadow-sm animate-fadeIn">
+              <AlertCircle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="font-semibold">{machineStatusNotice}</p>
+                <p className="text-[10px] text-rose-300/80 mt-0.5">
+                  Para alterar a disponibilidade, aceda ao menu Administração com credenciais de Administrador.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMachineStatusNotice(null)}
+                className="text-rose-400 hover:text-white text-xs font-bold px-1"
+              >
+                ×
+              </button>
+            </div>
+          )}
+
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-slate-400 border-t border-slate-800/80 pt-2">
             <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-slate-500 inline-block"></span>
-              Disponível
+              <span className="h-2 w-2 rounded-full bg-emerald-500" /> Disponível (A trabalhar)
             </span>
             <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-rose-500 inline-block"></span>
-              Parada
+              <span className="h-2 w-2 rounded-full bg-rose-500" /> Avaria / Parada Ativa
+            </span>
+            <span className="flex items-center gap-1">
+              <Lock className="h-3 w-3 text-rose-400" /> Parada (Aguarda Decisão da Administração)
             </span>
           </div>
         </div>
@@ -204,6 +265,8 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
           {MACHINES_DATA.map((machine) => {
             const active = activeMap.get(machine.code);
             const isStopped = !!active;
+            const isPlanned = dailyMachinePlan.machineIds.includes(machine.code);
+            const isLocked = !isPlanned;
 
             return (
               <button
@@ -211,12 +274,21 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
                 type="button"
                 onClick={() => handleMachineClick(machine)}
                 disabled={isStarting}
+                aria-label={`${machine.code}, ${isStopped ? 'parada ativa' : isPlanned ? 'disponível a trabalhar' : 'parada aguardando decisão'}`}
+                title={isLocked ? `Máquina ${machine.code} parada aguardando decisão da administração` : undefined}
                 className={`relative flex min-h-[58px] sm:min-h-[64px] flex-col items-center justify-center rounded-xl border-2 p-1.5 transition-all active:scale-[0.95] ${
                   isStopped
                     ? 'border-rose-500 bg-rose-950/60 text-white shadow-md shadow-rose-950/40 ring-1 ring-rose-500'
-                    : 'border-slate-700 bg-slate-900/90 text-slate-100 hover:border-amber-500 hover:bg-slate-800 shadow-sm'
+                    : isPlanned
+                      ? 'border-emerald-500/70 bg-emerald-950/30 text-white hover:border-emerald-400 hover:bg-emerald-900/50 shadow-sm'
+                      : 'border-slate-800 bg-slate-950/80 text-slate-500 hover:border-rose-500/40 shadow-sm opacity-60'
                 }`}
               >
+                {isLocked && !isStopped && (
+                  <span className="absolute -left-1 -top-1 rounded-full bg-slate-900 border border-rose-500/50 p-0.5 text-rose-400" title="Parada aguardando decisão">
+                    <Lock className="h-3 w-3" />
+                  </span>
+                )}
                 {/* Active Indicator if machine has ongoing downtime */}
                 {isStopped && (
                   <span className="absolute -top-1.5 -right-1 flex h-3 w-3">
@@ -231,10 +303,10 @@ export const PageSelectMachine: React.FC<PageSelectMachineProps> = ({
 
                 <span
                   className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-tight mt-0.5 ${
-                    isStopped ? 'text-rose-300' : 'text-slate-400'
+                    isStopped ? 'text-rose-300' : isPlanned ? 'text-emerald-400' : 'text-slate-500'
                   }`}
                 >
-                  {isStopped ? 'Parada' : 'Livre'}
+                  {isStopped ? 'Parada' : isPlanned ? 'Disponível' : 'Em Decisão'}
                 </span>
               </button>
             );

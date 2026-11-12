@@ -11,12 +11,22 @@ import {
   sanitizeStoppageRecord,
   type SanitizedStoppage,
 } from './server/stoppageSanitizer';
+import {
+  canWriteStoppage,
+  matchesActiveStoppageClosure,
+} from './server/stoppageAuthorization';
+import {
+  canStartMachine,
+  getFactoryDate,
+  isValidMachineCode,
+} from './server/dailyMachinePlan';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+// Dev server and container reverse-proxy expect the app to listen on port 3000
+const PORT = 3000;
 
 /**
  * Número de proxies à frente da aplicação, para que req.ip seja o IP real do cliente
@@ -45,15 +55,18 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 const DEFAULT_OPERATORS: any[] = [];
 
 const DEFAULT_STOPPAGE_TYPES = [
-  { id: 'st-1', name: 'Avaria Mecânica', color: 'rose', description: 'Rolamentos, correias, engrenagens, quebras estruturais', active: true },
-  { id: 'st-2', name: 'Avaria Elétrica', color: 'amber', description: 'Motores, sensores, disjuntores, cablagem, PLCs', active: true },
-  { id: 'st-3', name: 'Problema Pneumático / Hidráulico', color: 'sky', description: 'Fugas de ar, cilindros, válvulas solenóide, pressão de óleo', active: true },
-  { id: 'st-4', name: 'Falta de Matéria-Prima', color: 'orange', description: 'Ausência de bobines, caixas, químicos ou insumos', active: true },
-  { id: 'st-5', name: 'Setup / Mudança de Formato', color: 'indigo', description: 'Ajuste de moldes, troca de ferramentas, afinação', active: true },
-  { id: 'st-6', name: 'Limpeza e Higienização', color: 'emerald', description: 'Lavagem de linha, aspiração, desinfeção', active: true },
-  { id: 'st-7', name: 'Manutenção Preventiva', color: 'blue', description: 'Revisão periódica programada, lubrificação', active: true },
-  { id: 'st-8', name: 'Qualidade / Afinação', color: 'purple', description: 'Desvio de tolerâncias, defeito de produto, amostras', active: true },
-  { id: 'st-9', name: 'Operacional / Outro', color: 'slate', description: 'Pausa operacional, falta de operador, outros motivos', active: true },
+  { id: 'st-mola', name: 'Afinação Mola', color: 'amber', description: 'Fechar Baixo, Abrir Baixo, Corrigir Espiral, Abrir/Fechar Todo, Escada, Mola', active: true },
+  { id: 'st-afin-mec', name: 'Afinação Mecânica', color: 'blue', description: 'Braços, Pica, Cabeça, Borboleta (Curso, Tempo, Ajuste)', active: true },
+  { id: 'st-1', name: 'Avaria Mecânica', color: 'rose', description: 'Paragem mecânica garantida da máquina, componentes danificados e quebras', active: true },
+  { id: 'st-outro', name: 'Outro', color: 'slate', description: 'Pausa operacional, intervenção específica ou outras observações', active: true },
+  // Tipos históricos preservados para retrocompatibilidade
+  { id: 'st-2', name: 'Avaria Elétrica', color: 'amber', description: 'Motores, sensores, disjuntores, cablagem, PLCs', active: false },
+  { id: 'st-3', name: 'Problema Pneumático / Hidráulico', color: 'sky', description: 'Fugas de ar, cilindros, válvulas solenóide, pressão de óleo', active: false },
+  { id: 'st-4', name: 'Falta de Matéria-Prima', color: 'orange', description: 'Ausência de bobines, caixas, químicos ou insumos', active: false },
+  { id: 'st-5', name: 'Setup / Mudança de Formato', color: 'indigo', description: 'Ajuste de moldes, troca de ferramentas, afinação', active: false },
+  { id: 'st-6', name: 'Limpeza e Higienização', color: 'emerald', description: 'Lavagem de linha, aspiração, desinfeção', active: false },
+  { id: 'st-7', name: 'Manutenção Preventiva', color: 'blue', description: 'Revisão periódica programada, lubrificação', active: false },
+  { id: 'st-8', name: 'Qualidade / Afinação', color: 'purple', description: 'Desvio de tolerâncias, defeito de produto, amostras', active: false },
 ];
 
 const DEFAULT_STOPPAGES_SEED: any[] = [];
@@ -143,6 +156,9 @@ function publicOperators(operators: any[]) {
 }
 
 function respondWithStoreError(res: express.Response, error: unknown) {
+  if (error instanceof supabaseStore.StoreConflictError) {
+    return res.status(409).json({ error: error.message });
+  }
   console.error('Supabase persistence error:', error);
   return res.status(503).json({
     error: 'Não foi possível aceder à base de dados central. Verifique a ligação ao Supabase e tente novamente.',
@@ -265,6 +281,17 @@ function loadLegacyDatabase(): DatabaseSchema {
   };
 }
 
+function saveLegacyDatabase(data: DatabaseSchema): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to write to contingency DB_FILE:', err);
+  }
+}
+
 function validAdminCredentials(value: unknown): value is supabaseStore.AdminCredentials {
   const credentials = value as Partial<supabaseStore.AdminCredentials> | null;
   return Boolean(
@@ -283,10 +310,10 @@ function validAdminCredentials(value: unknown): value is supabaseStore.AdminCred
 }
 
 async function getOrInitializeAdminCredentials(): Promise<supabaseStore.AdminCredentials> {
-  const stored = await supabaseStore.getAdminCredentials();
+  const stored = await supabaseStore.getAdminCredentials().catch(() => undefined);
   if (validAdminCredentials(stored)) return stored;
   const legacy = loadLegacyDatabase().admin;
-  await supabaseStore.saveAdminCredentials(legacy);
+  await supabaseStore.saveAdminCredentials(legacy).catch(() => {});
   return legacy;
 }
 
@@ -299,19 +326,30 @@ async function initializeSupabaseStorage(): Promise<void> {
       if (marker?.complete) return;
 
       const legacy = loadLegacyDatabase();
-      if (!validAdminCredentials(await supabaseStore.getAdminCredentials())) {
+      const creds = await supabaseStore.getAdminCredentials();
+      if (!validAdminCredentials(creds)) {
         await supabaseStore.saveAdminCredentials(legacy.admin);
       }
 
       const stoppageTypes = await supabaseStore.getStoppageTypes();
       if (!stoppageTypes.length) {
-        await supabaseStore.importStoppageTypes(legacy.stoppageTypes.length ? legacy.stoppageTypes : DEFAULT_STOPPAGE_TYPES);
+        await supabaseStore.importStoppageTypes(DEFAULT_STOPPAGE_TYPES);
+      } else {
+        const existingNames = new Set(stoppageTypes.map((t) => t.name.toLowerCase()));
+        const missingCore = DEFAULT_STOPPAGE_TYPES.filter(
+          (t) => !existingNames.has(t.name.toLowerCase())
+        );
+        if (missingCore.length > 0) {
+          await supabaseStore.importStoppageTypes(missingCore);
+        }
       }
 
-      if (!(await supabaseStore.getStoppages()).length && legacy.stoppages.length) {
+      const existingStoppages = await supabaseStore.getStoppages();
+      if (!existingStoppages.length && legacy.stoppages.length) {
         await supabaseStore.batchImportStoppages(legacy.stoppages, false);
       }
-      if (!(await supabaseStore.getActiveDowntimes()).length && legacy.activeDowntimes.length) {
+      const existingActives = await supabaseStore.getActiveDowntimes();
+      if (!existingActives.length && legacy.activeDowntimes.length) {
         await supabaseStore.importActiveDowntimesIfAbsent(legacy.activeDowntimes);
       }
 
@@ -321,6 +359,7 @@ async function initializeSupabaseStorage(): Promise<void> {
       });
     })().catch((error) => {
       storageInitialization = undefined;
+      console.warn('Supabase storage initialization failed; it will be retried.', error);
       throw error;
     });
   }
@@ -376,10 +415,46 @@ function requireOperatorPermission(permission: 'canStart' | 'canClose') {
   };
 }
 
+function requireSession(req: express.Request, res: express.Response, next: express.NextFunction) {
+  void getSession(req).then((session) => {
+    if (!session) {
+      res.status(401).json({ error: 'Sessão inválida ou expirada. Inicie sessão para continuar.' });
+      return;
+    }
+    next();
+  }).catch((error) => respondWithStoreError(res, error));
+}
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', serverTime: Date.now() });
+});
+
 app.use('/api', (req, res, next) => {
-  void initializeSupabaseStorage().then(() => next()).catch((error) => respondWithStoreError(res, error));
+  void initializeSupabaseStorage()
+    .then(() => next())
+    .catch((error) => respondWithStoreError(res, error));
 });
 // REST API ROUTES
+
+// Public operator picker used by the login screen. Only non-sensitive fields are exposed.
+app.get('/api/auth/operators', async (_req, res) => {
+  try {
+    const operators = await supabaseStore.getOperators();
+    res.json(
+      publicOperators(operators)
+        .filter((operator: any) => operator.active)
+        .map((operator: any) => ({
+          id: operator.id,
+          name: operator.name,
+          role: operator.role,
+          canStart: operator.canStart,
+          canClose: operator.canClose,
+        }))
+    );
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
 
 // 1. Admin Authentication Routes
 app.post('/api/admin/login', async (req, res) => {
@@ -563,15 +638,17 @@ app.post('/api/operators/logout', async (req, res) => {
   }
 });
 
-// 2. Complete application state shared by every workstation.
-app.get('/api/state', async (_req, res) => {
+// 2. Complete application state shared by every workstation. Requires an authenticated session.
+app.get('/api/state', requireSession, async (_req, res) => {
   try {
-    const [operators, stoppageTypes, activeDowntimes, stoppages, stoppageTemplates] = await Promise.all([
+    const planDate = getFactoryDate();
+    const [operators, stoppageTypes, activeDowntimes, stoppages, stoppageTemplates, plannedMachineIds] = await Promise.all([
       supabaseStore.getOperators(),
       supabaseStore.getStoppageTypes(),
       supabaseStore.getActiveDowntimes(),
       supabaseStore.getStoppages(),
       supabaseStore.getStoppageTemplates(),
+      supabaseStore.getDailyMachinePlan(planDate),
     ]);
     res.json({
       operators: publicOperators(operators),
@@ -579,6 +656,7 @@ app.get('/api/state', async (_req, res) => {
       activeDowntimes,
       stoppages,
       stoppageTemplates,
+      dailyMachinePlan: { date: planDate, machineIds: plannedMachineIds },
       serverTime: Date.now(),
       updatedAt: Date.now(),
     });
@@ -587,9 +665,40 @@ app.get('/api/state', async (_req, res) => {
   }
 });
 
+app.put('/api/daily-machine-plan/:machineId', requireAdminAuth, async (req, res) => {
+  const machineId = req.params.machineId.trim().toUpperCase();
+  const { planned } = req.body || {};
+  if (!isValidMachineCode(machineId) || typeof planned !== 'boolean') {
+    return res.status(400).json({ error: 'Dados inválidos para atualizar o estado da máquina.' });
+  }
+
+  try {
+    const planDate = getFactoryDate();
+    await supabaseStore.setDailyMachinePlanned(planDate, machineId, planned);
+    res.json({ date: planDate, machineId, planned });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.put('/api/daily-machine-plan', requireAdminAuth, async (req, res) => {
+  const { machineIds } = req.body || {};
+  if (!Array.isArray(machineIds)) {
+    return res.status(400).json({ error: 'Lista de identificadores de máquina inválida.' });
+  }
+
+  try {
+    const planDate = getFactoryDate();
+    await supabaseStore.setAllDailyMachinesPlanned(planDate, machineIds);
+    res.json({ date: planDate, machineIds });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
 
 // 3. Active stoppages are keyed by a normalized machine id and updated transactionally.
-app.get('/api/active-stoppages', async (_req, res) => {
+app.get('/api/active-stoppages', requireSession, async (_req, res) => {
   try {
     res.json(await supabaseStore.getActiveDowntimes());
   } catch (error) {
@@ -625,6 +734,14 @@ app.post('/api/active-stoppages', async (req, res) => {
       return res.status(session ? 403 : 401).json({
         error: existing ? 'É necessária a permissão para atualizar paragens.' : 'É necessária a permissão para iniciar paragens.',
       });
+    }
+    if (!existing) {
+      const plannedMachineIds = await supabaseStore.getDailyMachinePlan(getFactoryDate());
+      if (!canStartMachine(machineId, plannedMachineIds, false)) {
+        return res.status(403).json({
+          error: 'Esta máquina não está incluída no plano de produção de hoje. Atualize o plano antes de iniciar uma paragem.',
+        });
+      }
     }
     if (!existing && session?.role === 'operator') {
       const operator = await supabaseStore.getOperator(session.operatorId || '');
@@ -667,12 +784,17 @@ app.delete('/api/active-stoppages/:machineId', requireOperatorPermission('canClo
   }
 });
 
-// 4. Historical stoppage records.
-app.get('/api/stoppages', async (_req, res) => {
+// 4. Historical stoppage records. Requires an authenticated session.
+app.get('/api/stoppages', requireSession, async (_req, res) => {
   try {
     res.json(await supabaseStore.getStoppages());
   } catch (error) {
-    return respondWithStoreError(res, error);
+    console.warn('Erro ao ler paragens do Supabase, a ler contingência local:', error);
+    try {
+      res.json(loadLegacyDatabase().stoppages);
+    } catch {
+      return respondWithStoreError(res, error);
+    }
   }
 });
 
@@ -706,17 +828,57 @@ app.post('/api/stoppages', async (req, res) => {
   }
 
   try {
-    const activeDowntime = await supabaseStore.getActiveDowntime(machineId);
-    const isClosingActiveDowntime = activeDowntime?.startTimestamp === incoming.startTimestamp;
     const session = await getSession(req);
-    if (
-      !isClosingActiveDowntime &&
-      session?.role !== 'admin' &&
-      !(session?.role === 'operator' && session.canClose)
-    ) {
+    const isStationClosure = incoming.id.startsWith('stop-');
+    const pinHeader = req.headers['x-operator-pin'] || req.headers['x-deletion-pin'];
+    const pinBody = req.body?.pin;
+    const providedPin = (pinHeader || pinBody || '').toString().trim();
+    const writeThrottleKeys = [`stoppage-write:ip:${req.ip || 'unknown'}`, 'stoppage-write:global'];
+
+    let isPinAuthorized = false;
+    if (!canWriteStoppage(session, false) && providedPin) {
+      const lockedUntil = await loginThrottle.getLockedUntil(writeThrottleKeys);
+      if (lockedUntil > Date.now()) {
+        return rejectLocked(res, lockedUntil);
+      }
+      isPinAuthorized = await verifyAuthorizationPin(
+        providedPin,
+        isStationClosure ? incoming.closedBy : undefined
+      );
+      if (!isPinAuthorized) {
+        const locked = await loginThrottle.registerFailure([
+          { key: writeThrottleKeys[0], limit: DELETE_PIN_LIMIT_PER_IP },
+          { key: writeThrottleKeys[1], limit: DELETE_PIN_LIMIT_GLOBAL },
+        ]);
+        if (locked > Date.now()) {
+          return rejectLocked(res, locked);
+        }
+      } else {
+        await loginThrottle.clearFailures(writeThrottleKeys);
+      }
+    }
+
+    if (!canWriteStoppage(session, isPinAuthorized)) {
       return res.status(session ? 403 : 401).json({
-        error: 'É necessária uma sessão de operador autorizado para registar uma paragem manual.',
+        error: isStationClosure
+          ? 'Introduza o PIN do operador selecionado com permissão de fecho ou use uma sessão autorizada.'
+          : 'É necessário um PIN de operador autorizado ou sessão ativa para registar uma paragem manual.',
       });
+    }
+
+    const activeDowntime = await supabaseStore.getActiveDowntime(machineId);
+    const activeStartTimestamp =
+      typeof activeDowntime?.startTimestamp === 'number' ? activeDowntime.startTimestamp : undefined;
+    const isClosingActiveDowntime = Boolean(
+      activeDowntime &&
+        matchesActiveStoppageClosure(
+          incoming.id,
+          incoming.startTimestamp,
+          activeStartTimestamp
+        )
+    );
+    if (isStationClosure && !isClosingActiveDowntime) {
+      return res.status(409).json({ error: 'A paragem ativa já foi alterada noutro posto.' });
     }
 
     // Só os campos conhecidos são guardados (ver server/stoppageSanitizer.ts).
@@ -728,19 +890,15 @@ app.post('/api/stoppages', async (req, res) => {
       ...sanitized.record,
       shift: sanitized.record.shift || computeShift(incoming.startTimestamp, incoming.startTime),
     };
-    const result = await supabaseStore.saveStoppage(record, Boolean(isClosingActiveDowntime));
-    if (!result?.success) {
-      return res.status(409).json({
-        error: typeof result?.error === 'string' ? result.error : 'A paragem ativa foi alterada noutro posto.',
-      });
-    }
+
+    const result = await supabaseStore.saveStoppage(record, isClosingActiveDowntime);
     res.status(201).json(result.data || record);
   } catch (error) {
     return respondWithStoreError(res, error);
   }
 });
 
-async function verifyAuthorizationPin(providedPin: string): Promise<boolean> {
+async function verifyAuthorizationPin(providedPin: string, expectedOperatorName?: string): Promise<boolean> {
   if (!providedPin || typeof providedPin !== 'string') return false;
   const pin = providedPin.trim();
   if (pin.length < 4 || pin.length > 256) return false;
@@ -754,22 +912,18 @@ async function verifyAuthorizationPin(providedPin: string): Promise<boolean> {
         (operator) =>
           operator.active &&
           operator.canClose &&
+          (!expectedOperatorName ||
+            operator.name.trim().toLowerCase() === expectedOperatorName.trim().toLowerCase()) &&
           operator.pinSalt &&
           operator.pinHash &&
           verifySecret(pin, operator.pinSalt, operator.pinHash)
       );
     if (operatorPinValid) return true;
-
-    // Check if initial default PIN 2026 is allowed when no operator with PIN is configured
-    const hasAnyOperatorWithPin = operators.some(
-      (o) => o.active && o.canClose && o.pinSalt && o.pinHash
-    );
-    if (!hasAnyOperatorWithPin && pin === '2026') {
-      return true;
-    }
   } catch (err) {
     console.error('Error fetching operators for PIN verification:', err);
   }
+
+  if (expectedOperatorName) return false;
 
   // 2. Check Admin credentials
   try {
@@ -857,7 +1011,7 @@ app.put('/api/stoppages/:id', async (req, res) => {
     const result = await supabaseStore.updateStoppage(id, record);
     if (!result?.success) {
       return res.status(409).json({
-        error: typeof result?.error === 'string' ? result.error : 'Não foi possível atualizar a paragem.',
+        error: typeof (result as any)?.error === 'string' ? (result as any).error : 'Não foi possível atualizar a paragem.',
       });
     }
 
@@ -1006,7 +1160,7 @@ app.post('/api/stoppages/batch-import', requireAdminAuth, async (req, res) => {
 });
 
 // 6. Operators Management (Protected by requireAdminAuth)
-app.get('/api/operators', async (_req, res) => {
+app.get('/api/operators', requireSession, async (_req, res) => {
   try {
     res.json(publicOperators(await supabaseStore.getOperators()));
   } catch (error) {

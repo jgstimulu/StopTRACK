@@ -4,6 +4,8 @@ export class SupabaseStoreError extends Error {
   }
 }
 
+export class StoreConflictError extends Error {}
+
 export interface AdminCredentials {
   email: string;
   passwordSalt: string;
@@ -58,6 +60,10 @@ type StoppageTemplateRow = {
   keywords: string[];
   active: boolean;
   display_order: number;
+};
+type DailyMachinePlanRow = {
+  plan_date: string;
+  machine_id: string;
 };
 type SessionRow = {
   token_hash: string;
@@ -217,6 +223,100 @@ export async function getStoppageTypes() {
   return rows.map(({ id, name, color, description, active }) => ({
     id, name, color, description, active,
   }));
+}
+
+export async function getDailyMachinePlan(date: string): Promise<string[]> {
+  try {
+    const query = new URLSearchParams({
+      select: 'machine_id',
+      plan_date: `eq.${date}`,
+      order: 'machine_id.asc',
+    });
+    const rows = await request<DailyMachinePlanRow[]>(`/daily_machine_plan?${query}`);
+    if (rows && rows.length > 0) {
+      return rows.map((row) => row.machine_id);
+    }
+  } catch (error) {
+    console.warn('Tabela daily_machine_plan indisponível no Supabase, a recorrer a app_settings:', error);
+  }
+
+  // Fallback to app_settings
+  try {
+    const settingPlan = await getSetting<{ date?: string; machineIds?: string[] }>('daily_machine_plan');
+    if (settingPlan?.machineIds && Array.isArray(settingPlan.machineIds) && settingPlan.machineIds.length > 0) {
+      return settingPlan.machineIds;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Predefinição da fábrica: Todas as 30 máquinas disponíveis (F01 a F30)
+  return Array.from({ length: 30 }, (_, i) => `F${(i + 1).toString().padStart(2, '0')}`);
+}
+
+export async function setDailyMachinePlanned(
+  date: string,
+  machineId: string,
+  planned: boolean
+): Promise<void> {
+  const currentList = await getDailyMachinePlan(date);
+  const set = new Set(currentList);
+  if (planned) set.add(machineId);
+  else set.delete(machineId);
+  const updatedList = Array.from(set).sort();
+
+  // Guardar em app_settings para garantia e resiliência
+  try {
+    await setSetting('daily_machine_plan', { date, machineIds: updatedList });
+  } catch (settingErr) {
+    console.warn('Erro ao guardar plano em app_settings:', settingErr);
+  }
+
+  // Tentar guardar na tabela daily_machine_plan se existir
+  try {
+    const query = new URLSearchParams({
+      plan_date: `eq.${date}`,
+      machine_id: `eq.${machineId}`,
+    });
+    if (!planned) {
+      await request(`/daily_machine_plan?${query}`, { method: 'DELETE' });
+      return;
+    }
+    await request('/daily_machine_plan?on_conflict=plan_date,machine_id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ plan_date: date, machine_id: machineId }),
+    });
+  } catch (tableErr) {
+    console.warn('Aviso não fatal ao gravar em daily_machine_plan:', tableErr);
+  }
+}
+
+export async function setAllDailyMachinesPlanned(
+  date: string,
+  machineIds: string[]
+): Promise<void> {
+  const normalized = Array.from(new Set(machineIds.map((m) => m.trim().toUpperCase()))).sort();
+
+  try {
+    await setSetting('daily_machine_plan', { date, machineIds: normalized });
+  } catch (settingErr) {
+    console.warn('Erro ao guardar lote em app_settings:', settingErr);
+  }
+
+  try {
+    const query = new URLSearchParams({ plan_date: `eq.${date}` });
+    await request(`/daily_machine_plan?${query}`, { method: 'DELETE' });
+    if (normalized.length > 0) {
+      await request('/daily_machine_plan', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify(normalized.map((id) => ({ plan_date: date, machine_id: id }))),
+      });
+    }
+  } catch (tableErr) {
+    console.warn('Aviso não fatal ao gravar lote em daily_machine_plan:', tableErr);
+  }
 }
 
 export async function createStoppageType(stoppageType: Record<string, unknown> & { id: string }) {
@@ -465,15 +565,11 @@ export async function getStoppageTemplates(): Promise<StoppageTemplateItem[]> {
 
 export async function createStoppageTemplate(template: Record<string, unknown> & { id: string }): Promise<StoppageTemplateItem> {
   const row = templateToRow(template);
-  try {
-    await request('/stoppage_templates', {
-      method: 'POST',
-      headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify(row),
-    });
-  } catch (error) {
-    console.warn('Erro ao criar stoppage_template no Supabase, a gravar na memória:', error);
-  }
+  await request('/stoppage_templates', {
+    method: 'POST',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify(row),
+  });
   const item = templateFromRow(row as unknown as StoppageTemplateRow);
   inMemoryTemplates = [...inMemoryTemplates.filter((t) => t.id !== item.id), item];
   return item;
@@ -494,42 +590,22 @@ export async function updateStoppageTemplate(
   if (changes.active !== undefined) rowChanges.active = Boolean(changes.active);
   if (changes.displayOrder !== undefined) rowChanges.display_order = Number(changes.displayOrder);
 
-  try {
-    const query = new URLSearchParams({ id: `eq.${id}` });
-    const rows = await request<StoppageTemplateRow[]>(`/stoppage_templates?${query}`, {
-      method: 'PATCH',
-      headers: { Prefer: 'return=representation' },
-      body: JSON.stringify(rowChanges),
-    });
-    if (rows?.[0]) {
-      const updated = templateFromRow(rows[0]);
-      inMemoryTemplates = inMemoryTemplates.map((t) => (t.id === id ? updated : t));
-      return updated;
-    }
-  } catch (error) {
-    console.warn('Erro ao atualizar stoppage_template no Supabase, a atualizar memória:', error);
-  }
+  const query = new URLSearchParams({ id: `eq.${id}` });
+  const rows = await request<StoppageTemplateRow[]>(`/stoppage_templates?${query}`, {
+    method: 'PATCH',
+    headers: { Prefer: 'return=representation' },
+    body: JSON.stringify(rowChanges),
+  });
+  if (!rows?.[0]) return undefined;
 
-  const existingIdx = inMemoryTemplates.findIndex((t) => t.id === id);
-  if (existingIdx >= 0) {
-    const merged: StoppageTemplateItem = {
-      ...inMemoryTemplates[existingIdx],
-      ...changes,
-      id,
-    } as StoppageTemplateItem;
-    inMemoryTemplates[existingIdx] = merged;
-    return merged;
-  }
-  return undefined;
+  const updated = templateFromRow(rows[0]);
+  inMemoryTemplates = inMemoryTemplates.map((t) => (t.id === id ? updated : t));
+  return updated;
 }
 
 export async function deleteStoppageTemplate(id: string): Promise<void> {
-  try {
-    const query = new URLSearchParams({ id: `eq.${id}` });
-    await request(`/stoppage_templates?${query}`, { method: 'DELETE' });
-  } catch (error) {
-    console.warn('Erro ao eliminar stoppage_template no Supabase:', error);
-  }
+  const query = new URLSearchParams({ id: `eq.${id}` });
+  await request(`/stoppage_templates?${query}`, { method: 'DELETE' });
   inMemoryTemplates = inMemoryTemplates.filter((t) => t.id !== id);
 }
 
@@ -602,15 +678,31 @@ export async function saveStoppage(
   record: Record<string, unknown> & { id: string; machineId: string; startTimestamp: number; startTime: string; date: string; createdAt: number },
   expectedActive: boolean
 ) {
-  return request<Record<string, unknown>>('/rpc/save_stoppage_and_clear_active', {
-    method: 'POST',
-    body: JSON.stringify({
-      p_record: record,
-      p_machine_id: normalizeMachineId(record.machineId),
-      p_start_timestamp: record.startTimestamp,
-      p_expected_active: expectedActive,
-    }),
-  });
+  const normalizedMachineId = normalizeMachineId(record.machineId);
+
+  const rpcResult = await request<{ success?: boolean; data?: Record<string, unknown>; error?: string }>(
+    '/rpc/save_stoppage_and_clear_active',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        p_record: record,
+        p_machine_id: normalizedMachineId,
+        p_start_timestamp: record.startTimestamp,
+        p_expected_active: expectedActive,
+      }),
+    }
+  );
+
+  if (!rpcResult) {
+    throw new SupabaseStoreError(502, 'O Supabase devolveu uma resposta inválida ao guardar a paragem.');
+  }
+  if (rpcResult.success === false) {
+    throw new StoreConflictError(rpcResult?.error || 'A paragem ativa foi alterada noutro posto.');
+  }
+  if (rpcResult.success !== true) {
+    throw new SupabaseStoreError(502, 'O Supabase devolveu uma resposta inválida ao guardar a paragem.');
+  }
+  return { success: true, data: rpcResult.data || record };
 }
 
 export async function updateStoppage(
@@ -628,19 +720,13 @@ export async function updateStoppage(
     data: record,
   };
   const query = new URLSearchParams({ id: `eq.${id}` });
-  try {
-    const patched = await request<StoppageRow[]>(`/stoppages?${query}`, {
-      method: 'PATCH',
-      headers: { Prefer: 'return=representation' },
-      body: JSON.stringify(row),
-    });
-    if (patched && patched.length > 0) {
-      return { success: true, data: patched[0].data || record };
-    }
-  } catch (patchErr) {
-    console.warn('Direct PATCH on /stoppages failed, falling back to RPC:', patchErr);
-  }
-  return saveStoppage(record, false);
+  const patched = await request<StoppageRow[]>(`/stoppages?${query}`, {
+    method: 'PATCH',
+    headers: { Prefer: 'return=representation' },
+    body: JSON.stringify(row),
+  });
+  if (!patched?.length) return { success: false };
+  return { success: true, data: patched[0].data || record };
 }
 
 export async function deleteStoppage(id: string) {

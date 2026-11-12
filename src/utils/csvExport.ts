@@ -1,5 +1,13 @@
 import { StoppageRecord, Operator, StoppageTypeItem } from '../types/manutrack';
 import { MACHINES_DATA } from '../data/initialData';
+import {
+  formatMechanicalAdjustments,
+  formatSpringAdjustments,
+  getInterventionClassification,
+  getReportingTotals,
+  isRecordMachineStopped,
+  isTuningRecord,
+} from './taxonomy';
 
 /**
  * Utilitário profissional de exportação CSV para o StopTRACK.
@@ -28,6 +36,18 @@ function triggerDownload(csvContent: string, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+function formatStages(stages: StoppageRecord['stages']): string {
+  if (!stages || stages.length === 0) return '';
+  return stages
+    .map((s) => {
+      const lvl = s.level || (s.order === 1 ? 1 : 2);
+      const lvlPrefix =
+        lvl === 1 ? 'N1-Diagnóstico' : lvl === 2 ? 'N2-Intervenção' : 'N3-Fecho';
+      return `[${lvlPrefix}] #${s.order} ${s.type} [${s.durationMinutes}m] (${s.technician || 'Sem técnico'}${s.description ? `: ${s.description}` : ''})`;
+    })
+    .join(' | ');
+}
+
 /**
  * Exporta lista de registos de paragem (filtrados ou totais)
  */
@@ -45,6 +65,7 @@ export function exportStoppageRecordsCSV(
     'Prioridade',
     'Estado da Avaria',
     'A Máquina Parou?',
+    'É Afinação?',
     'Hora Início',
     'Hora Fim',
     'Duração (HH:MM:SS)',
@@ -53,8 +74,15 @@ export function exportStoppageRecordsCSV(
     'Quem Iniciou',
     'Quem Fechou',
     'Tipo de Paragem',
+    'Classificação da Intervenção',
+    'Ajustes de Mola',
+    'Ajustes Mecânicos',
+    'Subcategoria',
+    'Causa Típica',
     'Descrição da Avaria',
     'Ação Realizada / Intervenção',
+    'Ações Corretivas',
+    'Palavras-chave',
     'Etapas Detalhadas (Sub-fases)',
     'Observações Adicionais',
     'Data/Hora de Registo (Timestamp)',
@@ -64,16 +92,7 @@ export function exportStoppageRecordsCSV(
     const durationMinutes = Math.round((r.durationMs / 60000) * 10) / 10;
     const durationSeconds = Math.round(r.durationMs / 1000);
     const createdDateStr = r.createdAt ? new Date(r.createdAt).toLocaleString('pt-PT') : '';
-    const stagesStr = r.stages && r.stages.length > 0
-      ? r.stages
-          .map((s) => {
-            const lvl = s.level || (s.order === 1 ? 1 : 2);
-            const lvlPrefix =
-              lvl === 1 ? 'N1-Diagnóstico' : lvl === 2 ? 'N2-Intervenção' : 'N3-Fecho';
-            return `[${lvlPrefix}] #${s.order} ${s.type} [${s.durationMinutes}m] (${s.technician || 'Sem técnico'}${s.description ? `: ${s.description}` : ''})`;
-          })
-          .join(' | ')
-      : '';
+    const stagesStr = formatStages(r.stages);
 
     return [
       escapeCsvCell(r.id),
@@ -84,6 +103,7 @@ export function exportStoppageRecordsCSV(
       escapeCsvCell(r.priority || 'Média'),
       escapeCsvCell(r.status || 'Resolvido'),
       escapeCsvCell(r.machineStopped === true ? 'Sim' : r.machineStopped === false ? 'Não' : ''),
+      escapeCsvCell(isTuningRecord(r) ? 'Sim' : 'Não'),
       escapeCsvCell(r.startTime),
       escapeCsvCell(r.endTime),
       escapeCsvCell(r.durationFormatted),
@@ -92,8 +112,15 @@ export function exportStoppageRecordsCSV(
       escapeCsvCell(r.initiatedBy),
       escapeCsvCell(r.closedBy),
       escapeCsvCell(r.stoppageType),
+      escapeCsvCell(getInterventionClassification(r)),
+      escapeCsvCell(formatSpringAdjustments(r)),
+      escapeCsvCell(formatMechanicalAdjustments(r)),
+      escapeCsvCell(r.subcategory || ''),
+      escapeCsvCell(r.typicalCause || ''),
       escapeCsvCell(r.stoppageDescription),
       escapeCsvCell(r.actionsTaken),
+      escapeCsvCell(r.correctiveActions || ''),
+      escapeCsvCell((r.keywords ?? []).join('; ')),
       escapeCsvCell(stagesStr),
       escapeCsvCell(r.otherObservations || ''),
       escapeCsvCell(createdDateStr),
@@ -105,28 +132,39 @@ export function exportStoppageRecordsCSV(
 }
 
 /**
- * Exporta Indicadores de Performance OEE e Métricas por Máquina
+ * Exporta Indicadores de Performance OEE e Métricas por Máquina.
+ *
+ * Os indicadores de paragem (MTTR, tempo parado e distribuições) consideram
+ * apenas registos em que a máquina parou. O tempo de afinação é reportado
+ * separadamente, pois pode incluir marcha de ensaio.
  */
 export function exportOeeKpiCSV(
   records: StoppageRecord[],
   filenamePrefix = 'stoptrack_indicadores_oee'
 ): void {
   const dateStr = new Date().toISOString().slice(0, 10);
-  const totalCount = records.length;
-  const totalDurationMs = records.reduce((acc, cur) => acc + cur.durationMs, 0);
-  const totalMinutes = Math.round(totalDurationMs / 60000);
-  const totalHours = Math.round((totalMinutes / 60) * 10) / 10;
-  const mttrMinutes = totalCount > 0 ? Math.round(totalMinutes / totalCount) : 0;
+  const totals = getReportingTotals(records);
+  const downtimeRecords = records.filter(isRecordMachineStopped);
+  const tuningRecords = records.filter(isTuningRecord);
 
-  // Cálculos por Máquina
+  const downtimeHours = Math.round((totals.downtimeMinutes / 60) * 10) / 10;
+  const tuningHours = Math.round((totals.tuningMinutes / 60) * 10) / 10;
+
+  // Cálculos por Máquina (paragens reais + tempo de afinação associado)
   const machineMetrics = MACHINES_DATA.map((m) => {
-    const machineRecords = records.filter((r) => r.machineId === m.id);
-    const count = machineRecords.length;
-    const durationMs = machineRecords.reduce((acc, r) => acc + r.durationMs, 0);
+    const machineDowntime = downtimeRecords.filter((r) => r.machineId === m.id);
+    const machineTuning = tuningRecords.filter((r) => r.machineId === m.id);
+    const count = machineDowntime.length;
+    const durationMs = machineDowntime.reduce((acc, r) => acc + (r.durationMs || 0), 0);
     const minutes = Math.round(durationMs / 60000);
     const hours = Math.round((minutes / 60) * 10) / 10;
     const machineMttr = count > 0 ? Math.round(minutes / count) : 0;
-    const percentOfTotalDowntime = totalMinutes > 0 ? Math.round((minutes / totalMinutes) * 1000) / 10 : 0;
+    const tuningDurationMs = machineTuning.reduce((acc, r) => acc + (r.durationMs || 0), 0);
+    const tuningMinutes = Math.round(tuningDurationMs / 60000);
+    const percentOfTotalDowntime =
+      totals.downtimeMinutes > 0
+        ? Math.round((minutes / totals.downtimeMinutes) * 1000) / 10
+        : 0;
 
     return {
       id: m.id,
@@ -136,17 +174,29 @@ export function exportOeeKpiCSV(
       minutes,
       hours,
       mttr: machineMttr,
+      tuningCount: machineTuning.length,
+      tuningMinutes,
       percentOfTotal: percentOfTotalDowntime,
     };
   }).sort((a, b) => b.minutes - a.minutes);
 
-  // Cálculos por Tipo de Paragem
+  // Cálculos por Tipo de Paragem (apenas paragens reais)
   const typeMap = new Map<string, { count: number; durationMs: number }>();
-  records.forEach((r) => {
+  downtimeRecords.forEach((r) => {
     const cur = typeMap.get(r.stoppageType) || { count: 0, durationMs: 0 };
     typeMap.set(r.stoppageType, {
       count: cur.count + 1,
-      durationMs: cur.durationMs + r.durationMs,
+      durationMs: cur.durationMs + (r.durationMs || 0),
+    });
+  });
+
+  // Tempo de afinação por tipo (inclui intervenções com a máquina em marcha de ensaio)
+  const tuningTypeMap = new Map<string, { count: number; durationMs: number }>();
+  tuningRecords.forEach((r) => {
+    const cur = tuningTypeMap.get(r.stoppageType) || { count: 0, durationMs: 0 };
+    tuningTypeMap.set(r.stoppageType, {
+      count: cur.count + 1,
+      durationMs: cur.durationMs + (r.durationMs || 0),
     });
   });
 
@@ -155,10 +205,16 @@ export function exportOeeKpiCSV(
   // Seção 1: Resumo Executivo
   lines.push('=== STOPTRACK - RELATÓRIO EXECUTIVO DE INDICADORES E OEE ===');
   lines.push(`"Data de Extração";"${new Date().toLocaleString('pt-PT')}"`);
-  lines.push(`"Total de Registos de Paragem Analisados";"${totalCount}"`);
-  lines.push(`"Tempo Total Parado (Minutos)";"${totalMinutes}"`);
-  lines.push(`"Tempo Total Parado (Horas)";"${totalHours.toString().replace('.', ',')}"`);
-  lines.push(`"MTTR Médio Global (Minutos por Paragem)";"${mttrMinutes}"`);
+  lines.push(`"Total de Registos Analisados";"${totals.totalCount}"`);
+  lines.push(`"Total de Paragens Reais (Máquina Parada)";"${totals.downtimeCount}"`);
+  lines.push(`"Total de Registos de Afinação";"${totals.tuningCount}"`);
+  lines.push(`"Tempo Total em Paragem (Minutos)";"${totals.downtimeMinutes}"`);
+  lines.push(`"Tempo Total em Paragem (Horas)";"${downtimeHours.toString().replace('.', ',')}"`);
+  lines.push(`"Tempo Total de Afinação (Minutos)";"${totals.tuningMinutes}"`);
+  lines.push(`"Tempo Total de Afinação (Horas)";"${tuningHours.toString().replace('.', ',')}"`);
+  lines.push(`"MTTR Médio Global (Minutos por Paragem Real)";"${totals.mttrMinutes}"`);
+  lines.push('');
+  lines.push('"Nota";"OEE, MTTR, MTBF e distribuições usam apenas paragens reais. O tempo de afinação é contabilizado à parte."');
   lines.push('');
 
   // Seção 2: Desempenho e Paragens por Máquina
@@ -167,10 +223,12 @@ export function exportOeeKpiCSV(
     'Código Máquina',
     'Nome Máquina',
     'Secção / Linha',
-    'Nº de Paragens',
+    'Nº de Paragens Reais',
     'Tempo Parado (Minutos)',
     'Tempo Parado (Horas)',
     'MTTR da Máquina (Minutos)',
+    'Nº de Afinações',
+    'Tempo de Afinação (Minutos)',
     '% do Tempo Total Parado',
   ];
   lines.push(machineHeaders.join(';'));
@@ -184,20 +242,23 @@ export function exportOeeKpiCSV(
       escapeCsvCell(m.minutes),
       escapeCsvCell(m.hours.toString().replace('.', ',')),
       escapeCsvCell(m.mttr),
+      escapeCsvCell(m.tuningCount),
+      escapeCsvCell(m.tuningMinutes),
       escapeCsvCell(`${m.percentOfTotal.toString().replace('.', ',')}%`),
     ].join(';'));
   });
 
   lines.push('');
 
-  // Seção 3: Distribuição por Tipo de Paragem
-  lines.push('=== DISTRIBUIÇÃO POR TIPO DE PARAGEM ===');
+  // Seção 3: Distribuição por Tipo de Paragem (paragens reais)
+  lines.push('=== DISTRIBUIÇÃO POR TIPO DE PARAGEM REAL ===');
   const typeHeaders = [
     'Tipo de Paragem',
     'Ocorrências',
     'Tempo Acumulado (Minutos)',
     'MTTR por Categoria (Min)',
     '% das Ocorrências',
+    '% do Tempo Parado',
   ];
   lines.push(typeHeaders.join(';'));
 
@@ -206,15 +267,51 @@ export function exportOeeKpiCSV(
     .forEach(([typeName, data]) => {
       const typeMinutes = Math.round(data.durationMs / 60000);
       const catMttr = data.count > 0 ? Math.round(typeMinutes / data.count) : 0;
-      const pct = totalCount > 0 ? Math.round((data.count / totalCount) * 1000) / 10 : 0;
+      const pct = totals.downtimeCount > 0 ? Math.round((data.count / totals.downtimeCount) * 1000) / 10 : 0;
+      const timePct =
+        totals.downtimeMinutes > 0 ? Math.round((typeMinutes / totals.downtimeMinutes) * 1000) / 10 : 0;
       lines.push([
         escapeCsvCell(typeName),
         escapeCsvCell(data.count),
         escapeCsvCell(typeMinutes),
         escapeCsvCell(catMttr),
         escapeCsvCell(`${pct.toString().replace('.', ',')}%`),
+        escapeCsvCell(`${timePct.toString().replace('.', ',')}%`),
       ].join(';'));
     });
+
+  lines.push('');
+
+  // Seção 4: Tempo de Afinação por Tipo
+  lines.push('=== TEMPO DE AFINAÇÃO POR TIPO (INTERVENÇÕES COM MARCHA DE ENSAIO) ===');
+  if (tuningTypeMap.size === 0) {
+    lines.push('"Sem registos de afinação no período analisado"');
+  } else {
+    const tuningHeaders = [
+      'Tipo de Afinação',
+      'Ocorrências',
+      'Tempo Acumulado (Minutos)',
+      'Tempo Médio por Afinação (Min)',
+      '% do Tempo de Afinação',
+    ];
+    lines.push(tuningHeaders.join(';'));
+
+    Array.from(tuningTypeMap.entries())
+      .sort((a, b) => b[1].durationMs - a[1].durationMs)
+      .forEach(([typeName, data]) => {
+        const typeMinutes = Math.round(data.durationMs / 60000);
+        const avgMinutes = data.count > 0 ? Math.round(typeMinutes / data.count) : 0;
+        const timePct =
+          totals.tuningMinutes > 0 ? Math.round((typeMinutes / totals.tuningMinutes) * 1000) / 10 : 0;
+        lines.push([
+          escapeCsvCell(typeName),
+          escapeCsvCell(data.count),
+          escapeCsvCell(typeMinutes),
+          escapeCsvCell(avgMinutes),
+          escapeCsvCell(`${timePct.toString().replace('.', ',')}%`),
+        ].join(';'));
+      });
+  }
 
   const csvContent = '\uFEFF' + lines.join('\r\n');
   triggerDownload(csvContent, `${filenamePrefix}_${dateStr}.csv`);
@@ -230,12 +327,17 @@ export function exportConsolidatedBackupCSV(
   filenamePrefix = 'stoptrack_exportacao_total'
 ): void {
   const dateStr = new Date().toISOString().slice(0, 10);
+  const totals = getReportingTotals(records);
   const lines: string[] = [];
 
   // Cabeçalho Geral
   lines.push('=== STOPTRACK - EXPORTAÇÃO TOTAL CONSOLIDADA ===');
   lines.push(`"Data da Exportação";"${new Date().toLocaleString('pt-PT')}"`);
   lines.push(`"Total de Registos de Paragem";"${records.length}"`);
+  lines.push(`"Total de Paragens Reais (Máquina Parada)";"${totals.downtimeCount}"`);
+  lines.push(`"Total de Registos de Afinação";"${totals.tuningCount}"`);
+  lines.push(`"Tempo Total em Paragem (Minutos)";"${totals.downtimeMinutes}"`);
+  lines.push(`"Tempo Total de Afinação (Minutos)";"${totals.tuningMinutes}"`);
   lines.push(`"Total de Operadores Registados";"${operators.length}"`);
   lines.push(`"Total de Tipos de Paragem Configurados";"${stoppageTypes.length}"`);
   lines.push('');
@@ -251,6 +353,7 @@ export function exportConsolidatedBackupCSV(
     'Prioridade',
     'Estado da Avaria',
     'A Máquina Parou?',
+    'É Afinação?',
     'Hora Início',
     'Hora Fim',
     'Duração (HH:MM:SS)',
@@ -258,8 +361,15 @@ export function exportConsolidatedBackupCSV(
     'Quem Iniciou',
     'Quem Fechou',
     'Tipo de Paragem',
+    'Classificação da Intervenção',
+    'Ajustes de Mola',
+    'Ajustes Mecânicos',
+    'Subcategoria',
+    'Causa Típica',
     'Descrição da Avaria',
     'Ação Realizada / Intervenção',
+    'Ações Corretivas',
+    'Palavras-chave',
     'Observações Adicionais',
     'Timestamp Criação',
   ];
@@ -275,6 +385,7 @@ export function exportConsolidatedBackupCSV(
       escapeCsvCell(r.priority || 'Média'),
       escapeCsvCell(r.status || 'Resolvido'),
       escapeCsvCell(r.machineStopped === true ? 'Sim' : r.machineStopped === false ? 'Não' : ''),
+      escapeCsvCell(isTuningRecord(r) ? 'Sim' : 'Não'),
       escapeCsvCell(r.startTime),
       escapeCsvCell(r.endTime),
       escapeCsvCell(r.durationFormatted),
@@ -282,8 +393,15 @@ export function exportConsolidatedBackupCSV(
       escapeCsvCell(r.initiatedBy),
       escapeCsvCell(r.closedBy),
       escapeCsvCell(r.stoppageType),
+      escapeCsvCell(getInterventionClassification(r)),
+      escapeCsvCell(formatSpringAdjustments(r)),
+      escapeCsvCell(formatMechanicalAdjustments(r)),
+      escapeCsvCell(r.subcategory || ''),
+      escapeCsvCell(r.typicalCause || ''),
       escapeCsvCell(r.stoppageDescription),
       escapeCsvCell(r.actionsTaken),
+      escapeCsvCell(r.correctiveActions || ''),
+      escapeCsvCell((r.keywords ?? []).join('; ')),
       escapeCsvCell(r.otherObservations || ''),
       escapeCsvCell(r.createdAt || ''),
     ].join(';'));

@@ -211,6 +211,39 @@ export function sanitizeStoppageRecord(
     if (cleanKeywords.length > 0) record.keywords = cleanKeywords;
   }
 
+  // Taxonomia e submenus de afinações/avarias
+  if (Array.isArray(input.springAdjustments)) {
+    const cleanSpring = input.springAdjustments
+      .filter((a): a is string => typeof a === 'string')
+      .map((a) => a.trim().slice(0, 64))
+      .filter((a) => a.length > 0)
+      .slice(0, 20);
+    if (cleanSpring.length > 0) record.springAdjustments = cleanSpring;
+  }
+
+  if (Array.isArray(input.mechanicalAdjustments)) {
+    const cleanMech: { component: string; adjustmentTypes: string[] }[] = [];
+    for (const item of input.mechanicalAdjustments) {
+      if (typeof item === 'object' && item !== null && 'component' in item) {
+        const itemObj = item as Plain;
+        const component = text(itemObj.component, 64);
+        const rawTypes: unknown[] = Array.isArray(itemObj.adjustmentTypes) ? (itemObj.adjustmentTypes as unknown[]) : [];
+        const adjustmentTypes = rawTypes
+          .filter((t: unknown): t is string => typeof t === 'string')
+          .map((t: string) => t.trim().slice(0, 32))
+          .filter((t: string) => ['Curso', 'Tempo', 'Ajuste'].includes(t));
+        if (component) {
+          cleanMech.push({ component, adjustmentTypes });
+        }
+      }
+    }
+    if (cleanMech.length > 0) record.mechanicalAdjustments = cleanMech;
+  }
+
+  if (typeof input.isTuningIntervention === 'boolean') {
+    record.isTuningIntervention = input.isTuningIntervention;
+  }
+
   const stages = sanitizeStages(input.stages);
   if (stages.length > 0) record.stages = stages;
 
