@@ -9,8 +9,10 @@ interface PageAvailabilityProps {
   availability: Record<string, MachineAvailabilityState>;
   onChangeMachine: (machineId: string, state: MachineAvailabilityState) => void;
   onConfirm: () => Promise<void>;
+  onContinueWithoutChanges?: () => void;
   availabilityDate: string;
   isConfirmed: boolean;
+  hasChanges: boolean;
   isSaving: boolean;
   saveError: string | null;
   savedAt: string | null;
@@ -52,8 +54,10 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
   availability,
   onChangeMachine,
   onConfirm,
+  onContinueWithoutChanges,
   availabilityDate,
   isConfirmed,
+  hasChanges,
   isSaving,
   saveError,
   savedAt,
@@ -90,7 +94,7 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
         </div>
       </div>
 
-      <div className="space-y-4 pb-24">
+      <div className="space-y-4 pb-44">
         <section aria-labelledby="machine-grid-heading" className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
           <div className="mb-3 flex items-center justify-between">
             <h2 id="machine-grid-heading" className="text-sm font-bold uppercase tracking-[0.15em] text-slate-300">
@@ -192,7 +196,7 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
       </div>
 
       <div className="fixed inset-x-0 bottom-0 z-20 flex justify-center bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent px-4 pb-4 pt-6">
-        <div className="w-full max-w-[440px]">
+        <div className="w-full max-w-[440px] space-y-2">
           {saveError && (
             <p role="alert" className="mb-2 rounded-lg border border-rose-500/50 bg-rose-950 px-3 py-2 text-xs font-medium text-rose-200">
               {saveError}
@@ -202,6 +206,24 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
             <p className="mb-2 text-center text-[10px] font-medium text-emerald-200">
               Registo no Supabase atualizado às {new Date(savedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}
             </p>
+          )}
+          {onContinueWithoutChanges && !hasChanges && (
+            <>
+              {!isConfirmed && (
+                <p className="text-center text-[10px] leading-relaxed text-slate-300">
+                  Sem guardar, mantém-se o plano diário já registado; máquinas fora desse plano continuam bloqueadas.
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={onContinueWithoutChanges}
+                disabled={isSaving}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-600 bg-slate-900 px-4 py-2.5 text-xs font-bold text-slate-200 transition-colors hover:border-slate-400 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-wait disabled:opacity-70"
+              >
+                Ir para o menu inicial sem alterar
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </>
           )}
           <button
             type="button"
