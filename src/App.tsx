@@ -464,15 +464,37 @@ export default function App() {
     localStorage.removeItem('manutrack_operators_cache');
     syncWithCloud();
 
-    const interval = setInterval(() => {
-      syncWithCloud();
-    }, 4000);
+    // Atualiza a cada 15 s e pausa quando o ecrã está escondido/bloqueado,
+    // para não gastar quota do Supabase (egress) com tablets em segundo plano.
+    const SYNC_INTERVAL_MS = 15000;
+    let interval: ReturnType<typeof setInterval> | null = null;
 
+    const startPolling = () => {
+      if (!interval) interval = setInterval(syncWithCloud, SYNC_INTERVAL_MS);
+    };
+    const stopPolling = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        syncWithCloud();
+        startPolling();
+      }
+    };
     const onFocus = () => syncWithCloud();
+
+    if (!document.hidden) startPolling();
+    document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', onFocus);
 
     return () => {
-      clearInterval(interval);
+      stopPolling();
+      document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('focus', onFocus);
     };
   }, [requiresLogin]);
