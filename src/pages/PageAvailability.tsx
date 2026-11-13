@@ -1,14 +1,21 @@
 import React, { useState } from 'react';
 import { ArrowRight, CheckCircle2, Circle, Lock, Wrench } from 'lucide-react';
-import { Machine, MachineAvailabilityState, MachineAvailabilityStatus } from '../types/manutrack';
+import {
+  Machine,
+  MachineAvailabilityState,
+  MachineAvailabilityStatus,
+  MachineMaintenanceRecord,
+} from '../types/manutrack';
 
 export type { MachineAvailabilityState, MachineAvailabilityStatus } from '../types/manutrack';
 
 interface PageAvailabilityProps {
   machines: Machine[];
   availability: Record<string, MachineAvailabilityState>;
+  machineMaintenances: Record<string, MachineMaintenanceRecord>;
   onChangeMachine: (machineId: string, state: MachineAvailabilityState) => void;
   onConfirm: () => Promise<void>;
+  onFinishMaintenance: (machineId: string) => Promise<void>;
   onContinueWithoutChanges?: () => void;
   availabilityDate: string;
   isConfirmed: boolean;
@@ -52,8 +59,10 @@ function formatAvailabilityDate(date: string): string {
 export const PageAvailability: React.FC<PageAvailabilityProps> = ({
   machines,
   availability,
+  machineMaintenances,
   onChangeMachine,
   onConfirm,
+  onFinishMaintenance,
   onContinueWithoutChanges,
   availabilityDate,
   isConfirmed,
@@ -71,6 +80,7 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
     (machine) => (availability[machine.id]?.status ?? 'Indisponível') === 'Disponível'
   ).length;
   const needsAttention = machines.length - availableCount;
+  const maintenanceCount = Object.keys(machineMaintenances).length;
 
   return (
     <div className="flex min-h-[90vh] flex-col px-4 py-5">
@@ -86,7 +96,11 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
           </span>
           <span className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/60 px-2.5 py-1 text-[11px] font-bold text-rose-200">
             <Lock className="h-3.5 w-3.5" />
-            {needsAttention} paradas
+            {Math.max(0, needsAttention - maintenanceCount)} indisponíveis
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-950/60 px-2.5 py-1 text-[11px] font-bold text-amber-200">
+            <Wrench className="h-3.5 w-3.5" />
+            {maintenanceCount} em manutenção
           </span>
           <span className="ml-auto text-[11px] font-medium text-slate-400">
             Registo diário · {formatAvailabilityDate(availabilityDate)}
@@ -106,6 +120,7 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
           <div className="grid grid-cols-5 gap-2 sm:gap-2.5">
             {machines.map((machine) => {
               const state = availability[machine.id] ?? { status: 'Indisponível', note: '' };
+              const isUnderMaintenance = Boolean(machineMaintenances[machine.code]);
               const style = STATUS_STYLES[state.status];
               const Icon = style.icon;
               const selected = selectedMachineId === machine.id;
@@ -114,9 +129,14 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
                 <button
                   key={machine.id}
                   type="button"
-                  aria-label={`${machine.code}, ${style.label}. Toque para ${state.status === 'Disponível' ? 'parar' : 'disponibilizar'} a máquina e editar observações.`}
+                  aria-label={
+                    isUnderMaintenance
+                      ? `${machine.code}, em manutenção. Selecione para consultar ou terminar a manutenção.`
+                      : `${machine.code}, ${style.label}. Toque para ${state.status === 'Disponível' ? 'parar' : 'disponibilizar'} a máquina e editar observações.`
+                  }
                   onClick={() => {
                     setSelectedMachineId(machine.id);
+                    if (isUnderMaintenance) return;
                     onChangeMachine(machine.id, {
                       ...state,
                       status: state.status === 'Disponível' ? 'Indisponível' : 'Disponível',
@@ -154,43 +174,65 @@ export const PageAvailability: React.FC<PageAvailabilityProps> = ({
               </span>
             </div>
 
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              {statusOptions.map((status) => {
-                const selected = selectedState.status === status;
-                const statusStyle = STATUS_STYLES[status];
-                const StatusIcon = statusStyle.icon;
-                return (
-                  <button
-                    key={status}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => onChangeMachine(selectedMachine.id, { ...selectedState, status })}
-                    className={`flex min-h-10 items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[10px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${
-                      selected
-                        ? statusStyle.button
-                        : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500 hover:text-white'
-                    }`}
-                  >
-                    <StatusIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                    <span>{status === 'Em manutenção' ? 'Manutenção' : status}</span>
-                  </button>
-                );
-              })}
-            </div>
+            {machineMaintenances[selectedMachine.code] ? (
+              <div className="mt-3 space-y-3">
+                <p className="rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-100">
+                  Esta máquina permanece bloqueada entre dias até a manutenção ser terminada.
+                  {machineMaintenances[selectedMachine.code].note
+                    ? ` Nota: ${machineMaintenances[selectedMachine.code].note}`
+                    : ''}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void onFinishMaintenance(selectedMachine.code)}
+                  disabled={isSaving}
+                  className="flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-amber-400/50 bg-amber-500 px-3 py-2 text-xs font-bold text-slate-950 transition-colors hover:bg-amber-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:cursor-wait disabled:opacity-60"
+                >
+                  <Wrench className="h-4 w-4" aria-hidden="true" />
+                  {isSaving ? 'A terminar manutenção…' : 'Terminar manutenção'}
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  {statusOptions.map((status) => {
+                    const selected = selectedState.status === status;
+                    const statusStyle = STATUS_STYLES[status];
+                    const StatusIcon = statusStyle.icon;
+                    return (
+                      <button
+                        key={status}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => onChangeMachine(selectedMachine.id, { ...selectedState, status })}
+                        className={`flex min-h-10 items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[10px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${
+                          selected
+                            ? statusStyle.button
+                            : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500 hover:text-white'
+                        }`}
+                      >
+                        <StatusIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        <span>{status === 'Em manutenção' ? 'Manutenção' : status}</span>
+                      </button>
+                    );
+                  })}
+                </div>
 
-            <label className="mt-3 block">
-              <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                Observações da máquina
-              </span>
-              <textarea
-                value={selectedState.note}
-                maxLength={500}
-                rows={2}
-                onChange={(event) => onChangeMachine(selectedMachine.id, { ...selectedState, note: event.target.value })}
-                placeholder="Ex.: sem operador, aguardando material..."
-                className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-              />
-            </label>
+                <label className="mt-3 block">
+                  <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                    Observações da máquina
+                  </span>
+                  <textarea
+                    value={selectedState.note}
+                    maxLength={500}
+                    rows={2}
+                    onChange={(event) => onChangeMachine(selectedMachine.id, { ...selectedState, note: event.target.value })}
+                    placeholder="Ex.: sem operador, aguardando material..."
+                    className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                  />
+                </label>
+              </>
+            )}
           </section>
         )}
       </div>

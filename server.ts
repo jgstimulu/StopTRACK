@@ -643,13 +643,22 @@ app.post('/api/operators/logout', async (req, res) => {
 app.get('/api/state', requireSession, async (_req, res) => {
   try {
     const planDate = getFactoryDate();
-    const [operators, stoppageTypes, activeDowntimes, stoppages, stoppageTemplates, plannedMachineIds] = await Promise.all([
+    const [
+      operators,
+      stoppageTypes,
+      activeDowntimes,
+      stoppages,
+      stoppageTemplates,
+      plannedMachineIds,
+      machineMaintenances,
+    ] = await Promise.all([
       supabaseStore.getOperators(),
       supabaseStore.getStoppageTypes(),
       supabaseStore.getActiveDowntimes(),
       supabaseStore.getStoppages(),
       supabaseStore.getStoppageTemplates(),
       supabaseStore.getDailyMachinePlan(planDate),
+      supabaseStore.getMachineMaintenances(),
     ]);
     let dailyMachineAvailability: Awaited<ReturnType<typeof supabaseStore.getDailyMachineAvailability>> = null;
     let dailyMachineAvailabilityError: string | undefined;
@@ -667,6 +676,7 @@ app.get('/api/state', requireSession, async (_req, res) => {
       stoppages,
       stoppageTemplates,
       dailyMachinePlan: { date: planDate, machineIds: plannedMachineIds },
+      machineMaintenances,
       dailyMachineAvailability,
       dailyMachineAvailabilityError,
       serverTime: Date.now(),
@@ -701,8 +711,22 @@ app.put('/api/daily-machine-plan', requireAdminAuth, async (req, res) => {
 
   try {
     const planDate = getFactoryDate();
-    await supabaseStore.setAllDailyMachinesPlanned(planDate, machineIds);
-    res.json({ date: planDate, machineIds });
+    const plannedMachineIds = await supabaseStore.setAllDailyMachinesPlanned(planDate, machineIds);
+    res.json({ date: planDate, machineIds: plannedMachineIds });
+  } catch (error) {
+    return respondWithStoreError(res, error);
+  }
+});
+
+app.post('/api/machine-maintenance/:machineId/finish', requireSession, async (req, res) => {
+  const machineId = req.params.machineId.trim().toUpperCase();
+  if (!isValidMachineCode(machineId)) {
+    return res.status(400).json({ error: 'Identificador de máquina inválido.' });
+  }
+
+  try {
+    const planDate = getFactoryDate();
+    res.json(await supabaseStore.finishMachineMaintenance(planDate, machineId));
   } catch (error) {
     return respondWithStoreError(res, error);
   }

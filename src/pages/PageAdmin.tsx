@@ -63,6 +63,7 @@ interface PageAdminProps {
   stoppageTemplates?: StoppageTemplate[];
   stoppageRecords: StoppageRecord[];
   dailyMachinePlan?: { date: string; machineIds: string[] };
+  machineMaintenanceIds?: string[];
   onSetDailyMachinePlanned?: (machine: Machine, planned: boolean) => Promise<void>;
   onSetAllDailyMachinesPlanned?: (machineIds: string[]) => Promise<void>;
   onAddOperator: (data: Omit<Operator, 'id' | 'active'>, pin: string) => Promise<void>;
@@ -88,6 +89,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
   stoppageTemplates = [],
   stoppageRecords,
   dailyMachinePlan = { date: '', machineIds: [] },
+  machineMaintenanceIds = [],
   onSetDailyMachinePlanned,
   onSetAllDailyMachinesPlanned,
   onAddOperator,
@@ -117,6 +119,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
 
   // Tabs: 'operators' | 'stoppage_types' | 'stoppage_templates' | 'machines' | 'import_csv' | 'security'
   const [activeTab, setActiveTab] = useState<'operators' | 'stoppage_types' | 'stoppage_templates' | 'machines' | 'import_csv' | 'security'>('operators');
+  const maintenanceMachineIdSet = new Set(machineMaintenanceIds);
 
   // Machine Management tab state
   const [machineLineFilter, setMachineLineFilter] = useState<'all' | 'linha1' | 'linha2' | 'linha3'>('all');
@@ -1891,7 +1894,7 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
             </div>
 
             {/* KPI Summary Cards */}
-            <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <div className="rounded-lg border border-slate-800 bg-slate-950/80 p-3 text-center">
                 <span className="text-[10px] font-bold uppercase text-slate-400 block truncate">
                   Total de Máquinas
@@ -1910,14 +1913,27 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                 <span className="text-[10px] text-emerald-400/80">Aptas a operar</span>
               </div>
 
+              <div className="rounded-lg border border-amber-500/30 bg-amber-950/40 p-3 text-center">
+                <span className="text-[10px] font-bold uppercase text-amber-300 block truncate">
+                  Em manutenção
+                </span>
+                <span className="text-2xl font-black font-mono text-amber-200 block mt-1">
+                  {machineMaintenanceIds.length}
+                </span>
+                <span className="text-[10px] text-amber-200/80">Bloqueadas até conclusão</span>
+              </div>
+
               <div className="rounded-lg border border-rose-500/30 bg-rose-950/40 p-3 text-center col-span-2 sm:col-span-1">
                 <span className="text-[10px] font-bold uppercase text-rose-400 block truncate">
-                  Paradas (Aguarda Decisão)
+                  Indisponíveis
                 </span>
                 <span className="text-2xl font-black font-mono text-rose-300 block mt-1">
-                  {Math.max(0, 30 - dailyMachinePlan.machineIds.length)}
+                  {Math.max(
+                    0,
+                    30 - dailyMachinePlan.machineIds.length - machineMaintenanceIds.length
+                  )}
                 </span>
-                <span className="text-[10px] text-rose-400/80">Fora de serviço / Em análise</span>
+                <span className="text-[10px] text-rose-400/80">Aguardam decisão diária</span>
               </div>
             </div>
 
@@ -1926,16 +1942,26 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
               <span className="text-[11px] font-bold text-slate-400 shrink-0">Ações Rápidas:</span>
               <button
                 type="button"
-                onClick={() => handleSetAllMachines(MACHINES_DATA.map((m) => m.code))}
+                onClick={() =>
+                  handleSetAllMachines(
+                    MACHINES_DATA.filter((machine) => !maintenanceMachineIdSet.has(machine.code)).map(
+                      (machine) => machine.code
+                    )
+                  )
+                }
                 disabled={machineActionLoading}
                 className="rounded-lg border border-emerald-500/40 bg-emerald-950/60 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-900/60 transition-colors disabled:opacity-50"
               >
-                Disponibilizar Todas (30 Máquinas)
+                {machineMaintenanceIds.length
+                  ? `Disponibilizar restantes (${30 - machineMaintenanceIds.length})`
+                  : 'Disponibilizar Todas (30 Máquinas)'}
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  const l1 = MACHINES_DATA.filter((m) => m.section === 'Linha 1').map((m) => m.code);
+                  const l1 = MACHINES_DATA.filter(
+                    (m) => m.section === 'Linha 1' && !maintenanceMachineIdSet.has(m.code)
+                  ).map((m) => m.code);
                   const currentWithoutL1 = dailyMachinePlan.machineIds.filter(
                     (id) => !l1.includes(id)
                   );
@@ -1949,7 +1975,9 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  const l2 = MACHINES_DATA.filter((m) => m.section === 'Linha 2').map((m) => m.code);
+                  const l2 = MACHINES_DATA.filter(
+                    (m) => m.section === 'Linha 2' && !maintenanceMachineIdSet.has(m.code)
+                  ).map((m) => m.code);
                   const currentWithoutL2 = dailyMachinePlan.machineIds.filter(
                     (id) => !l2.includes(id)
                   );
@@ -1963,7 +1991,9 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  const l3 = MACHINES_DATA.filter((m) => m.section === 'Linha 3').map((m) => m.code);
+                  const l3 = MACHINES_DATA.filter(
+                    (m) => m.section === 'Linha 3' && !maintenanceMachineIdSet.has(m.code)
+                  ).map((m) => m.code);
                   const currentWithoutL3 = dailyMachinePlan.machineIds.filter(
                     (id) => !l3.includes(id)
                   );
@@ -2015,13 +2045,16 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
               return m.section === 'Linha 3';
             }).map((machine) => {
               const isPlanned = dailyMachinePlan.machineIds.includes(machine.code);
+              const isUnderMaintenance = maintenanceMachineIdSet.has(machine.code);
               const isUpdating = togglingMachineId === machine.code;
 
               return (
                 <div
                   key={machine.code}
                   className={`rounded-xl border p-3.5 transition-all flex flex-col justify-between ${
-                    isPlanned
+                    isUnderMaintenance
+                      ? 'border-amber-500/40 bg-amber-950/30'
+                      : isPlanned
                       ? 'border-emerald-500/40 bg-slate-900/90 shadow-sm'
                       : 'border-slate-800 bg-slate-950/90 opacity-75'
                   }`}
@@ -2041,12 +2074,19 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
 
                     <span
                       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold font-mono border ${
-                        isPlanned
+                        isUnderMaintenance
+                          ? 'border-amber-500/40 bg-amber-950/60 text-amber-200'
+                          : isPlanned
                           ? 'border-emerald-500/40 bg-emerald-950/60 text-emerald-300'
                           : 'border-rose-500/40 bg-rose-950/60 text-rose-300'
                       }`}
                     >
-                      {isPlanned ? (
+                      {isUnderMaintenance ? (
+                        <>
+                          <Wrench className="h-3 w-3" />
+                          Em manutenção
+                        </>
+                      ) : isPlanned ? (
                         <>
                           <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
                           Disponível
@@ -2061,7 +2101,9 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                   </div>
 
                   <p className="mt-2.5 text-[10px] text-slate-400 leading-snug min-h-[28px]">
-                    {isPlanned
+                    {isUnderMaintenance
+                      ? 'Bloqueada até a manutenção ser terminada na disponibilidade diária.'
+                      : isPlanned
                       ? 'Em funcionamento normal na produção. Operadores podem iniciar paragens e afinações.'
                       : 'Parada por decisão de gestão. Aguarda decisão se será recuperada ou abatida.'}
                   </p>
@@ -2070,15 +2112,19 @@ export const PageAdmin: React.FC<PageAdminProps> = ({
                     <button
                       type="button"
                       onClick={() => handleToggleMachine(machine, isPlanned)}
-                      disabled={isUpdating || machineActionLoading}
+                      disabled={isUnderMaintenance || isUpdating || machineActionLoading}
                       className={`w-full rounded-lg py-2 px-3 text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-                        isPlanned
+                        isUnderMaintenance
+                          ? 'border border-amber-500/30 bg-amber-950/30 text-amber-200'
+                          : isPlanned
                           ? 'border border-rose-500/40 bg-rose-950/40 text-rose-300 hover:bg-rose-900/50'
                           : 'border border-emerald-500/40 bg-emerald-950/50 text-emerald-300 hover:bg-emerald-900/60'
                       } disabled:opacity-50`}
                     >
                       {isUpdating ? (
                         <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      ) : isUnderMaintenance ? (
+                        <span>Termine a manutenção primeiro</span>
                       ) : isPlanned ? (
                         <>
                           <Lock className="h-3.5 w-3.5" />

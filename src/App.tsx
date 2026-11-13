@@ -15,6 +15,7 @@ import {
   StoppageStageLevel,
   StoppageTemplate,
   MachineAvailabilityState,
+  MachineMaintenanceRecord,
 } from './types/manutrack';
 import { PageAvailability } from './pages/PageAvailability';
 import type { DailyMachinePlan } from './services/api';
@@ -57,6 +58,7 @@ import {
   apiSetDailyMachinePlanned,
   apiSetAllDailyMachinesPlanned,
   apiSaveDailyMachineAvailability,
+  apiFinishMachineMaintenance,
   ApiError,
   hasStoredSession,
   getAdminToken,
@@ -179,6 +181,11 @@ export default function App() {
   machineAvailabilityRef.current = machineAvailability;
   const availabilityBaselineRef = useRef<Record<string, MachineAvailabilityState> | null>(null);
   const availabilitySavedSnapshotRef = useRef<Record<string, MachineAvailabilityState> | null>(null);
+  const [machineMaintenances, setMachineMaintenances] = useState<
+    Record<string, MachineMaintenanceRecord>
+  >({});
+  const machineMaintenancesRef = useRef(machineMaintenances);
+  machineMaintenancesRef.current = machineMaintenances;
   const [availabilitySavedAt, setAvailabilitySavedAt] = useState<string | null>(null);
   const [isSavingAvailability, setIsSavingAvailability] = useState(false);
   const [availabilitySaveError, setAvailabilitySaveError] = useState<string | null>(null);
@@ -325,6 +332,17 @@ export default function App() {
       }
 
       const serverAvailabilityDate = state.dailyMachinePlan.date;
+      const previousMaintenanceIds = new Set(Object.keys(machineMaintenancesRef.current));
+      const nextMaintenances = Object.fromEntries(
+        (state.machineMaintenances ?? []).map((maintenance) => [
+          maintenance.machineId,
+          maintenance,
+        ])
+      );
+      const nextMaintenanceIds = new Set(Object.keys(nextMaintenances));
+      machineMaintenancesRef.current = nextMaintenances;
+      setMachineMaintenances(nextMaintenances);
+
       if (
         !availabilityInitializedRef.current ||
         availabilityDateRef.current !== serverAvailabilityDate
@@ -346,11 +364,20 @@ export default function App() {
             ? machineAvailabilityRef.current
             : createDefaultMachineAvailability());
 
-        availabilityBaselineRef.current = nextAvailability;
-        availabilitySavedSnapshotRef.current = savedAvailability?.machines ?? null;
+        const mergedAvailability = { ...nextAvailability };
+        for (const maintenance of state.machineMaintenances ?? []) {
+          mergedAvailability[maintenance.machineId] = {
+            status: 'Em manutenção',
+            note: maintenance.note,
+          };
+        }
+
+        machineAvailabilityRef.current = mergedAvailability;
+        availabilityBaselineRef.current = mergedAvailability;
+        availabilitySavedSnapshotRef.current = savedAvailability ? mergedAvailability : null;
         availabilityDateRef.current = serverAvailabilityDate;
         setAvailabilityDate(serverAvailabilityDate);
-        setMachineAvailability(nextAvailability);
+        setMachineAvailability(mergedAvailability);
         setAvailabilityConfirmed(Boolean(savedAvailability));
         setAvailabilityHasChanges(false);
         setAvailabilityStepSkipped(false);
@@ -358,6 +385,44 @@ export default function App() {
         setAvailabilitySaveError(state.dailyMachineAvailabilityError ?? null);
         setCurrentPage(isAdminSession ? 'admin' : 'availability');
         availabilityInitializedRef.current = true;
+      } else {
+        const baseline = availabilityBaselineRef.current;
+        const current = machineAvailabilityRef.current;
+        if (baseline) {
+          const nextBaseline = { ...baseline };
+          const nextAvailability = { ...current };
+
+          for (const machineId of previousMaintenanceIds) {
+            if (!nextMaintenanceIds.has(machineId)) {
+              const unavailable = { status: 'Indisponível' as const, note: '' };
+              if (nextBaseline[machineId]?.status === 'Em manutenção') {
+                nextBaseline[machineId] = unavailable;
+              }
+              if (nextAvailability[machineId]?.status === 'Em manutenção') {
+                nextAvailability[machineId] = unavailable;
+              }
+            }
+          }
+          for (const maintenance of state.machineMaintenances ?? []) {
+            const maintenanceState = { status: 'Em manutenção' as const, note: maintenance.note };
+            nextBaseline[maintenance.machineId] = maintenanceState;
+            nextAvailability[maintenance.machineId] = maintenanceState;
+          }
+
+          machineAvailabilityRef.current = nextAvailability;
+          availabilityBaselineRef.current = nextBaseline;
+          if (availabilitySavedSnapshotRef.current) {
+            availabilitySavedSnapshotRef.current = { ...nextBaseline };
+          }
+          setMachineAvailability(nextAvailability);
+          setAvailabilityHasChanges(!areMachineAvailabilitiesEqual(nextAvailability, nextBaseline));
+          setAvailabilityConfirmed(
+            Boolean(
+              availabilitySavedSnapshotRef.current &&
+                areMachineAvailabilitiesEqual(nextAvailability, availabilitySavedSnapshotRef.current)
+            )
+          );
+        }
       }
 
       // 1. Sync Operators with local merge (only trigger re-render if actually changed)
@@ -659,6 +724,53 @@ export default function App() {
         error instanceof Error
           ? `${error.message} As alterações continuam no dispositivo; tente guardar novamente.`
           : 'Não foi possível guardar a disponibilidade no Supabase. Tente novamente.'
+      );
+    } finally {
+      setIsSavingAvailability(false);
+    }
+  };
+
+  const handleFinishMachineMaintenance = async (machineId: string) => {
+    setIsSavingAvailability(true);
+    setAvailabilitySaveError(null);
+    try {
+      const result = await apiFinishMachineMaintenance(machineId);
+      const nextMaintenances = { ...machineMaintenancesRef.current };
+      delete nextMaintenances[machineId];
+      machineMaintenancesRef.current = nextMaintenances;
+      setMachineMaintenances(nextMaintenances);
+
+      const unavailable = { status: 'Indisponível' as const, note: '' };
+      const nextAvailability = { ...machineAvailabilityRef.current, [machineId]: unavailable };
+      const nextBaseline = availabilityBaselineRef.current
+        ? { ...availabilityBaselineRef.current, [machineId]: unavailable }
+        : null;
+      const nextSavedSnapshot = availabilitySavedSnapshotRef.current
+        ? { ...availabilitySavedSnapshotRef.current, [machineId]: unavailable }
+        : null;
+
+      machineAvailabilityRef.current = nextAvailability;
+      setMachineAvailability(nextAvailability);
+      availabilityBaselineRef.current = nextBaseline;
+      availabilitySavedSnapshotRef.current = nextSavedSnapshot;
+      setAvailabilityHasChanges(
+        !nextBaseline || !areMachineAvailabilitiesEqual(nextAvailability, nextBaseline)
+      );
+      setAvailabilityConfirmed(
+        Boolean(nextSavedSnapshot && areMachineAvailabilitiesEqual(nextAvailability, nextSavedSnapshot))
+      );
+      setAvailabilitySavedAt(result.finishedAt);
+      setDailyMachinePlan({ date: result.date, machineIds: result.machineIds });
+      dailyMachinePlanVersionRef.current += 1;
+      setAvailabilityStepSkipped(false);
+      setIsBackendConnected(true);
+      setToastMessage(`Manutenção da máquina ${machineId} terminada. Defina agora a disponibilidade diária.`);
+    } catch (error) {
+      setIsBackendConnected(false);
+      setAvailabilitySaveError(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível terminar a manutenção. Tente novamente.'
       );
     } finally {
       setIsSavingAvailability(false);
@@ -1189,8 +1301,10 @@ export default function App() {
           <PageAvailability
             machines={MACHINES_DATA}
             availability={machineAvailability}
+            machineMaintenances={machineMaintenances}
             onChangeMachine={handleChangeMachineAvailability}
             onConfirm={handleConfirmAvailability}
+            onFinishMaintenance={handleFinishMachineMaintenance}
             onContinueWithoutChanges={
               isAdminSession ? undefined : handleContinueWithoutAvailabilityChanges
             }
@@ -1357,6 +1471,7 @@ export default function App() {
                 stoppageTemplates={stoppageTemplates}
                 stoppageRecords={records}
                 dailyMachinePlan={dailyMachinePlan}
+                machineMaintenanceIds={Object.keys(machineMaintenances)}
                 onSetDailyMachinePlanned={handleSetDailyMachinePlanned}
                 onSetAllDailyMachinesPlanned={handleSetAllDailyMachinesPlanned}
                 onAddOperator={handleAddOperator}

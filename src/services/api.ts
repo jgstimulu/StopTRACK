@@ -5,6 +5,7 @@ import {
   ActiveDowntime,
   StoppageTemplate,
   MachineAvailabilityState,
+  MachineMaintenanceRecord,
 } from '../types/manutrack';
 
 export interface SharedPlantState {
@@ -15,6 +16,7 @@ export interface SharedPlantState {
   stoppages: StoppageRecord[];
   dailyMachinePlan: DailyMachinePlan;
   dailyMachineAvailability: DailyMachineAvailability | null;
+  machineMaintenances: MachineMaintenanceRecord[];
   dailyMachineAvailabilityError?: string;
   adminEmail?: string;
   serverTime: number;
@@ -237,6 +239,26 @@ export async function apiSaveDailyMachineAvailability(
   });
   if (!res.ok) {
     throw await responseError(res, 'Falha ao guardar a disponibilidade diária no Supabase.');
+  }
+  return await res.json();
+}
+
+export async function apiFinishMachineMaintenance(
+  machineId: string
+): Promise<{ date: string; machineId: string; machineIds: string[]; finishedAt: string }> {
+  const token = getAdminToken() || getOperatorToken();
+  if (!token) {
+    throw new ApiError('Sessão necessária para terminar a manutenção.', 401);
+  }
+  const res = await fetch(
+    `/api/machine-maintenance/${encodeURIComponent(machineId)}/finish`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    }
+  );
+  if (!res.ok) {
+    throw await responseError(res, 'Falha ao terminar a manutenção da máquina.');
   }
   return await res.json();
 }
