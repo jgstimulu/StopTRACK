@@ -93,6 +93,49 @@ function getSupabaseConfig() {
   return { url, serviceRoleKey };
 }
 
+// ---------------------------------------------------------------------------
+// Cache de leitura em memória.
+// Os tablets consultam /api/state a cada poucos segundos; sem cache, cada pedido
+// descarrega do Supabase as tabelas completas (sobretudo o histórico de paragens)
+// e consome a quota de egress. Aqui as leituras ficam em memória durante poucos
+// segundos e qualquer escrita (POST/PATCH/PUT/DELETE, incluindo RPC) limpa tudo.
+// ---------------------------------------------------------------------------
+const READ_CACHE_TTL_MS = Number(process.env.READ_CACHE_TTL_MS ?? 10_000);
+const readCache = new Map<string, { expiresAt: number; value: unknown }>();
+const readInflight = new Map<string, Promise<unknown>>();
+let readCacheGeneration = 0;
+
+function invalidateReadCache() {
+  readCacheGeneration += 1;
+  readCache.clear();
+  readInflight.clear();
+}
+
+async function cachedRead<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  if (READ_CACHE_TTL_MS <= 0) return loader();
+
+  const hit = readCache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.value as T;
+
+  const inflight = readInflight.get(key);
+  if (inflight) return inflight as Promise<T>;
+
+  const generation = readCacheGeneration;
+  const promise = loader()
+    .then((value) => {
+      // Só guarda se não houve nenhuma escrita enquanto a leitura decorria.
+      if (generation === readCacheGeneration) {
+        readCache.set(key, { expiresAt: Date.now() + READ_CACHE_TTL_MS, value });
+      }
+      return value;
+    })
+    .finally(() => {
+      if (readInflight.get(key) === promise) readInflight.delete(key);
+    });
+  readInflight.set(key, promise);
+  return promise;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T | undefined> {
   const { url, serviceRoleKey } = getSupabaseConfig();
   const headers = new Headers(init.headers);
@@ -105,14 +148,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T | und
   headers.set('Accept', 'application/json');
   if (init.body) headers.set('Content-Type', 'application/json');
 
+  const method = (init.method ?? 'GET').toUpperCase();
+  const isWrite = method !== 'GET' && method !== 'HEAD';
+  if (isWrite) invalidateReadCache();
+
   let response: Response;
   try {
     response = await fetch(`${url}/rest/v1${path}`, { ...init, headers });
   } catch (error) {
+    if (isWrite) invalidateReadCache();
     throw new SupabaseStoreError(503, `Não foi possível contactar o Supabase: ${String(error)}`);
   }
 
   const body = await response.text();
+  if (isWrite) invalidateReadCache();
   if (!response.ok) {
     throw new SupabaseStoreError(
       response.status,
@@ -123,6 +172,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T | und
 }
 
 async function getRows<T>(table: string, query: string): Promise<T[]> {
+  return cachedRead(`rows:${table}?${query}`, () => fetchAllRows<T>(table, query));
+}
+
+async function fetchAllRows<T>(table: string, query: string): Promise<T[]> {
   const rows: T[] = [];
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const page = await request<T[]>(
