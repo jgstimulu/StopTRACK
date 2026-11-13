@@ -72,6 +72,11 @@ type DailyMachineAvailabilityRow = {
   note: string;
   updated_at: string;
 };
+type MachineMaintenanceRow = {
+  machine_id: string;
+  note: string;
+  started_at: string;
+};
 type SessionRow = {
   token_hash: string;
   role: 'admin' | 'operator';
@@ -304,12 +309,50 @@ export async function getDailyMachineAvailability(date: string) {
   return { date, machines, savedAt };
 }
 
+export async function getMachineMaintenances() {
+  const rows = await getRows<MachineMaintenanceRow>(
+    'machine_maintenance',
+    'select=machine_id,note,started_at&order=machine_id.asc'
+  );
+  return rows.map((row) => ({
+    machineId: row.machine_id,
+    note: row.note,
+    startedAt: row.started_at,
+  }));
+}
+
 export async function setDailyMachineAvailability(
   date: string,
   machines: Record<string, { status: 'Disponível' | 'Em manutenção' | 'Indisponível'; note: string }>
 ) {
   const savedAt = new Date().toISOString();
-  const plannedMachineIds = Object.entries(machines)
+  const activeMaintenances = await getMachineMaintenances();
+  const activeMaintenanceIds = new Set(activeMaintenances.map(({ machineId }) => machineId));
+  const effectiveMachines = { ...machines };
+
+  for (const maintenance of activeMaintenances) {
+    effectiveMachines[maintenance.machineId] = {
+      status: 'Em manutenção',
+      note: maintenance.note,
+    };
+  }
+
+  const newMaintenances = Object.entries(effectiveMachines)
+    .filter(([machineId, state]) => state.status === 'Em manutenção' && !activeMaintenanceIds.has(machineId))
+    .map(([machineId, state]) => ({
+      machine_id: machineId,
+      note: state.note,
+      started_at: savedAt,
+    }));
+  if (newMaintenances.length > 0) {
+    await request('/machine_maintenance?on_conflict=machine_id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(newMaintenances),
+    });
+  }
+
+  const plannedMachineIds = Object.entries(effectiveMachines)
     .filter(([, state]) => state.status === 'Disponível')
     .map(([machineId]) => machineId)
     .sort();
@@ -320,7 +363,7 @@ export async function setDailyMachineAvailability(
   }
   await replaceDailyMachinePlanInTable(date, plannedMachineIds);
 
-  const rows = Object.entries(machines).map(([machineId, state]) => ({
+  const rows = Object.entries(effectiveMachines).map(([machineId, state]) => ({
     availability_date: date,
     machine_id: machineId,
     status: state.status,
@@ -332,10 +375,11 @@ export async function setDailyMachineAvailability(
     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
     body: JSON.stringify(rows),
   });
-  return { date, machines, savedAt };
+  return { date, machines: effectiveMachines, savedAt };
 }
 
 export async function getDailyMachinePlan(date: string): Promise<string[]> {
+  let machineIds: string[] = [];
   try {
     const query = new URLSearchParams({
       select: 'machine_id',
@@ -344,7 +388,7 @@ export async function getDailyMachinePlan(date: string): Promise<string[]> {
     });
     const rows = await request<DailyMachinePlanRow[]>(`/daily_machine_plan?${query}`);
     if (rows && rows.length > 0) {
-      return rows.map((row) => row.machine_id);
+      machineIds = rows.map((row) => row.machine_id);
     }
   } catch (error) {
     console.warn('Tabela daily_machine_plan indisponível no Supabase, a recorrer a app_settings:', error);
@@ -353,14 +397,17 @@ export async function getDailyMachinePlan(date: string): Promise<string[]> {
   // Fallback to app_settings
   try {
     const settingPlan = await getSetting<{ date?: string; machineIds?: string[] }>('daily_machine_plan');
-    if (settingPlan?.date === date && Array.isArray(settingPlan.machineIds)) {
-      return settingPlan.machineIds;
+    if (!machineIds.length && settingPlan?.date === date && Array.isArray(settingPlan.machineIds)) {
+      machineIds = settingPlan.machineIds;
     }
   } catch {
     // ignore
   }
 
-  return [];
+  const activeMaintenanceIds = new Set(
+    (await getMachineMaintenances()).map(({ machineId }) => machineId)
+  );
+  return machineIds.filter((machineId) => !activeMaintenanceIds.has(machineId));
 }
 
 async function replaceDailyMachinePlanInTable(date: string, machineIds: string[]) {
@@ -380,6 +427,17 @@ export async function setDailyMachinePlanned(
   machineId: string,
   planned: boolean
 ): Promise<void> {
+  if (planned) {
+    const activeMaintenanceIds = new Set(
+      (await getMachineMaintenances()).map(({ machineId }) => machineId)
+    );
+    if (activeMaintenanceIds.has(machineId)) {
+      throw new StoreConflictError(
+        `A máquina ${machineId} está em manutenção. Termine a manutenção antes de a disponibilizar.`
+      );
+    }
+  }
+
   const currentList = await getDailyMachinePlan(date);
   const set = new Set(currentList);
   if (planned) set.add(machineId);
@@ -416,8 +474,13 @@ export async function setDailyMachinePlanned(
 export async function setAllDailyMachinesPlanned(
   date: string,
   machineIds: string[]
-): Promise<void> {
-  const normalized = Array.from(new Set(machineIds.map((m) => m.trim().toUpperCase()))).sort();
+): Promise<string[]> {
+  const activeMaintenanceIds = new Set(
+    (await getMachineMaintenances()).map(({ machineId }) => machineId)
+  );
+  const normalized = Array.from(
+    new Set(machineIds.map((m) => m.trim().toUpperCase()).filter((id) => !activeMaintenanceIds.has(id)))
+  ).sort();
 
   try {
     await setSetting('daily_machine_plan', { date, machineIds: normalized });
@@ -430,6 +493,37 @@ export async function setAllDailyMachinesPlanned(
   } catch (tableErr) {
     console.warn('Aviso não fatal ao gravar lote em daily_machine_plan:', tableErr);
   }
+  return normalized;
+}
+
+export async function finishMachineMaintenance(
+  date: string,
+  machineId: string
+): Promise<{ date: string; machineId: string; machineIds: string[]; finishedAt: string }> {
+  await setDailyMachinePlanned(date, machineId, false);
+
+  const finishedAt = new Date().toISOString();
+  await request('/daily_machine_availability?on_conflict=availability_date,machine_id', {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({
+      availability_date: date,
+      machine_id: machineId,
+      status: 'Indisponível',
+      note: '',
+      updated_at: finishedAt,
+    }),
+  });
+
+  const query = new URLSearchParams({ machine_id: `eq.${machineId}` });
+  await request(`/machine_maintenance?${query}`, { method: 'DELETE' });
+
+  return {
+    date,
+    machineId,
+    machineIds: await getDailyMachinePlan(date),
+    finishedAt,
+  };
 }
 
 export async function createStoppageType(stoppageType: Record<string, unknown> & { id: string }) {

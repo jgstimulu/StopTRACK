@@ -31,6 +31,12 @@ export interface MachineAvailabilityState {
   note: string;
 }
 
+export interface MachineMaintenanceRecord {
+  machineId: string;
+  note: string;
+  startedAt: string;
+}
+
 export type StoppageStageLevel = 1 | 2 | 3;
 // 1 = Diagnóstico (Triagem inicial / Deteção de causa raiz)
 // 2 = Intervenção (Múltiplas etapas possíveis: Mecânica, Elétrica, Afinação, etc.)
