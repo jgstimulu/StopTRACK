@@ -629,7 +629,7 @@ export const PageManualEntry: React.FC<PageManualEntryProps> = ({
                 Duração Rápida:
               </label>
               <div className="flex items-center gap-1.5 flex-wrap">
-                {[15, 30, 45, 60, 90, 120].map((m) => (
+                {[5, 10, 15, 30, 45, 60, 90, 120].map((m) => (
                   <button
                     key={m}
                     type="button"
